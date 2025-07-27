@@ -23,14 +23,16 @@ class BigMartPipeline:
     Handles data flow from raw inputs to final predictions.
     """
     
-    def __init__(self, base_path: str):
+    def __init__(self, base_path: str, optimize_hyperparams: bool = True, n_trials: int = 50):
         self.base_path = Path(base_path)
         self.paths = self._setup_directory_structure()
+        self.optimize_hyperparams = optimize_hyperparams
+        self.n_trials = n_trials
         self.run_info = {
             'start_time': datetime.now(),
             'steps_completed': []
         }
-        
+
     def _setup_directory_structure(self) -> dict:
         """Create necessary directories and return path dictionary."""
         paths = {
@@ -160,17 +162,28 @@ class BigMartPipeline:
         # Get stratification column
         outlet_types = train_features['Outlet_Type']
         
-        scores, predictions = train_models(
+        scores, predictions, train_pred = train_models(
             X_train_path=str(self.paths['processed'] / 'train_encoded.csv'),
             y_train=y_train,
             X_test_path=str(self.paths['processed'] / 'test_encoded.csv'),
             outlet_types=outlet_types,
-            output_dir=str(self.paths['models'])
+            output_dir=str(self.paths['models']),
+            optimize_hyperparams=self.optimize_hyperparams,
+            n_trials=self.n_trials
         )
         
         # Save model scores
         scores_df = pd.DataFrame(list(scores.items()), columns=['Model', 'RMSE'])
         scores_df.to_csv(self.paths['logs'] / 'model_scores.csv', index=False)
+        
+        # Create train predictions
+        train_df = pd.read_csv(str(self.paths['processed'] / 'train_features.csv'))
+        train_df['Pred_Item_Outlet_Sales'] = np.expm1(train_pred)
+        train_df['log_sales'] = train_df['Item_Outlet_Sales']
+        train_df['Item_Outlet_Sales'] = np.expm1(train_df['Item_Outlet_Sales'])
+            
+        train_df.to_csv(str(self.paths['processed'] / 'train_predicted.csv'), index=False)
+        print("\nTrain predictions file created for analysis!")
         
         elapsed = time.time() - start_time
         print(f"Model training completed in {elapsed:.1f} seconds")
@@ -239,22 +252,32 @@ def main():
     parser.add_argument('--skip-steps', nargs='+', default=[],
                        choices=['ingest', 'features', 'encoding'],
                        help='Steps to skip if already completed')
+    parser.add_argument('--no-hyperparam-tuning', action='store_true',
+                       help='Disable hyperparameter optimization')
+    parser.add_argument('--n-trials', type=int, default=50,
+                       help='Number of trials for hyperparameter optimization')
     
     args = parser.parse_args()
     
     # Initialize and run pipeline
-    pipeline = BigMartPipeline(args.data_path)
+    pipeline = BigMartPipeline(
+        args.data_path, 
+        optimize_hyperparams=not args.no_hyperparam_tuning,
+        n_trials=args.n_trials
+    )
     pipeline.run_pipeline(skip_steps=args.skip_steps)
 
 
 if __name__ == "__main__":
     # For direct execution without command line args
-    data_path = "/Users/whysocurious/Documents/MLDSAIProjects/BigMartSalesPred_Hackathon/data"
+    data_path = "/Users/whysocurious/Documents/MLDSAIProjects/SalesPred_Hackathon/data"
     
-    pipeline = BigMartPipeline(data_path)
+    # Run with hyperparameter optimization (default)
+    pipeline = BigMartPipeline(data_path, optimize_hyperparams=True, n_trials=150)
     
     # Run full pipeline
-    # pipeline.run_pipeline()
+    pipeline.run_pipeline()
     
-    # Or skip completed steps
-    pipeline.run_pipeline(skip_steps=['ingest','features','encoding'])
+    # Or run without hyperparameter tuning for faster results
+    # pipeline = BigMartPipeline(data_path, optimize_hyperparams=False)
+    # pipeline.run_pipeline(skip_steps=['ingest', 'features'])
