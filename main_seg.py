@@ -12,11 +12,13 @@ from pathlib import Path
 import time
 from datetime import datetime
 
+from sklearn.metrics import mean_squared_error
+
 # Import custom modules (updated imports)
 from src.ingest.ingest import load_and_preprocess_data, DataPreprocessor
 from src.transform.feature_engineering import create_features
 from src.transform.feature_encoder import encode_features
-from src.train.segmented_model_trainer import train_segmented_models
+from src.train.segmented_model_trainer import SegmentedModelTrainer, train_segmented_models
 
 
 class BigMartSegmentedPipeline:
@@ -164,20 +166,17 @@ class BigMartSegmentedPipeline:
         return X_train, X_test, y_train
     
     def _run_segmented_model_training(self, X_train: pd.DataFrame, X_test: pd.DataFrame,
-                                    y_train: pd.Series, train_features: pd.DataFrame, 
-                                    test_features: pd.DataFrame) -> np.ndarray:
-        """Run segmented model training and prediction step."""
+                                y_train: pd.Series, train_features: pd.DataFrame, 
+                                test_features: pd.DataFrame) -> Dict[str, np.ndarray]:
+        """Run segmented model training and prediction step with multiple outputs."""
         start_time = time.time()
         
         print("Preparing segment information...")
         
-        # Initialize preprocessor if not already done
         if self.preprocessor is None:
             self.preprocessor = DataPreprocessor()
-            # Fit on training features to get consistent segment definitions
             self.preprocessor.fit(train_features)
         
-        # Extract segment information for both train and test
         segment_info_train = self.preprocessor.get_segment_info(train_features)
         segment_info_test = self.preprocessor.get_segment_info(test_features)
         
@@ -186,7 +185,7 @@ class BigMartSegmentedPipeline:
         
         # Print segment distributions
         print("\nSegment distributions:")
-        for col in ['Outlet_Type', 'Item_MRP_Bins','Outlet_Identifier']:
+        for col in ['Outlet_Type', 'Item_MRP_Bins']:
             if col in segment_info_train.columns:
                 print(f"\n{col} distribution (train):")
                 print(segment_info_train[col].value_counts())
@@ -195,8 +194,8 @@ class BigMartSegmentedPipeline:
         segment_info_train.to_csv(self.paths['processed'] / 'segment_info_train.csv', index=False)
         segment_info_test.to_csv(self.paths['processed'] / 'segment_info_test.csv', index=False)
         
-        # Train segmented models
-        scores, predictions = train_segmented_models(
+        # Train segmented models with updated trainer
+        scores, all_predictions, trainer = train_segmented_models(
             X_train_path=str(self.paths['processed'] / 'train_encoded.csv'),
             y_train=y_train,
             X_test_path=str(self.paths['processed'] / 'test_encoded.csv'),
@@ -207,13 +206,15 @@ class BigMartSegmentedPipeline:
             n_trials=self.n_trials
         )
         
-        # Save model scores
+        # Save comprehensive results
         self._save_segmented_scores(scores)
+        self._save_train_predictions(trainer.train_predictions, train_features, y_train)
+        self._save_feature_selection_results(trainer)
         
         elapsed = time.time() - start_time
         print(f"Segmented model training completed in {elapsed:.1f} seconds")
         
-        return predictions
+        return all_predictions
     
     def _save_segmented_scores(self, scores: Dict[str, Dict]):
         """Save segmented model scores to files."""
@@ -254,38 +255,58 @@ class BigMartSegmentedPipeline:
         print("\nSegmented Model Performance Summary:")
         print(summary_df.to_string(index=False))
     
-    def _create_submission(self, test_data: pd.DataFrame, predictions: np.ndarray):
-        """Create submission file with predictions."""
-        print("\nCreating submission file...")
+    def _create_submission(self, test_data: pd.DataFrame, all_predictions: Dict[str, np.ndarray]):
+        """Create multiple submission files with different prediction methods."""
+        print("\nCreating multiple submission files...")
         
-        # Note: predictions are already on original scale from segmented models
-        submission = pd.DataFrame({
+        # Base submission data
+        base_submission = pd.DataFrame({
             'Item_Identifier': test_data['Item_Identifier'],
-            'Outlet_Identifier': test_data['Outlet_Identifier'],
-            'Item_Outlet_Sales': predictions
+            'Outlet_Identifier': test_data['Outlet_Identifier']
         })
         
-        # Ensure no negative predictions
-        submission['Item_Outlet_Sales'] = submission['Item_Outlet_Sales'].clip(lower=0)
-        
-        # Save with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        submission_path = self.paths['submissions'] / f'segmented_submission_{timestamp}.csv'
-        submission.to_csv(submission_path, index=False)
         
-        # Also save as latest
-        submission.to_csv(self.paths['submissions'] / 'segmented_submission_latest.csv', index=False)
+        # Create individual submission files
+        submission_files = {}
         
-        print(f"Segmented submission saved to: {submission_path}")
-        print(f"Prediction statistics:")
-        print(f"  Mean: {predictions.mean():.2f}")
-        print(f"  Std: {predictions.std():.2f}")
-        print(f"  Min: {predictions.min():.2f}")
-        print(f"  Max: {predictions.max():.2f}")
-        print(f"  Median: {np.median(predictions):.2f}")
+        submission_mapping = {
+            'outlet_type': 'submission_outlet_type_segments',
+            'outlet_identifier': 'submission_outlet_id_segments', 
+            'mrp_bins': 'submission_mrp_bin_segments',
+            'best_single': 'submission_best_single_model',
+            'combined': 'submission_weighted_average'
+        }
         
-        # Create prediction analysis
-        self._analyze_predictions(test_data, predictions, submission_path.parent)
+        for pred_type, predictions in all_predictions.items():
+            if pred_type in submission_mapping:
+                # Ensure no negative predictions
+                predictions_clean = np.maximum(predictions, 0)
+                
+                submission = base_submission.copy()
+                submission['Item_Outlet_Sales'] = predictions_clean
+                
+                # Save with timestamp
+                filename = f"{submission_mapping[pred_type]}_{timestamp}.csv"
+                filepath = self.paths['submissions'] / filename
+                submission.to_csv(filepath, index=False)
+                
+                # Also save as latest
+                latest_filename = f"{submission_mapping[pred_type]}_latest.csv"
+                latest_filepath = self.paths['submissions'] / latest_filename
+                submission.to_csv(latest_filepath, index=False)
+                
+                submission_files[pred_type] = {
+                    'filepath': filepath,
+                    'predictions': predictions_clean
+                }
+                
+                print(f"✓ {submission_mapping[pred_type]}.csv")
+        
+        # Create submission comparison summary
+        self._create_submission_summary(submission_files, timestamp)
+        
+        print(f"\nAll submissions saved to: {self.paths['submissions']}")
     
     def _analyze_predictions(self, test_data: pd.DataFrame, predictions: np.ndarray, output_dir: Path):
         """Create detailed prediction analysis."""
@@ -324,6 +345,182 @@ class BigMartSegmentedPipeline:
         
         print("Prediction analysis completed!")
     
+    def _save_train_predictions(self, train_predictions: pd.DataFrame, 
+                           train_features: pd.DataFrame, y_train: pd.Series):
+        """Save training predictions for analysis."""
+        print("Saving training predictions...")
+        
+        # Combine with original data
+        train_analysis = pd.DataFrame({
+            'Item_Identifier': train_features['Item_Identifier'],
+            'Outlet_Identifier': train_features['Outlet_Identifier'],
+            'Outlet_Type': train_features['Outlet_Type'],
+            'Item_MRP_Bins': train_features['Item_MRP_Bins'],
+            'Actual_Sales': y_train
+        })
+        
+        # Add predictions
+        for col in train_predictions.columns:
+            train_analysis[col] = train_predictions[col]
+        
+        # Calculate residuals for each prediction type
+        for pred_col in train_predictions.columns:
+            residual_col = f'residual_{pred_col.replace("pred_", "")}'
+            train_analysis[residual_col] = train_analysis['Actual_Sales'] - train_analysis[pred_col]
+        
+        # Calculate prediction accuracy metrics
+        metrics_summary = []
+        for pred_col in train_predictions.columns:
+            pred_name = pred_col.replace('pred_', '')
+            rmse = np.sqrt(mean_squared_error(train_analysis['Actual_Sales'], train_analysis[pred_col]))
+            mae = np.mean(np.abs(train_analysis['Actual_Sales'] - train_analysis[pred_col]))
+            
+            metrics_summary.append({
+                'Model': pred_name,
+                'RMSE': rmse,
+                'MAE': mae
+            })
+        
+        metrics_df = pd.DataFrame(metrics_summary)
+        
+        # Save files
+        train_analysis.to_csv(self.paths['processed'] / 'train_predictions_analysis.csv', index=False)
+        metrics_df.to_csv(self.paths['logs'] / 'train_prediction_metrics.csv', index=False)
+        
+        print("Training predictions saved for analysis!")
+        print("\nTrain Prediction Metrics:")
+        print(metrics_df.to_string(index=False))
+
+    def _save_feature_selection_results(self, trainer):
+        """Save feature selection results for analysis."""
+        if not hasattr(trainer, 'selected_features') or not trainer.selected_features:
+            return
+        
+        print("Saving feature selection results...")
+        
+        # Compile feature selection summary
+        feature_summary = []
+        
+        for segment_type, segment_features in trainer.selected_features.items():
+            for segment, features in segment_features.items():
+                feature_summary.append({
+                    'Segment_Type': segment_type,
+                    'Segment': segment,
+                    'Selected_Features_Count': len(features),
+                    'Selected_Features': ', '.join(features[:10]) + ('...' if len(features) > 10 else '')
+                })
+        
+        feature_summary_df = pd.DataFrame(feature_summary)
+        feature_summary_df.to_csv(self.paths['logs'] / 'feature_selection_summary.csv', index=False)
+        
+        # Save detailed feature lists
+        detailed_features = {}
+        for segment_type, segment_features in trainer.selected_features.items():
+            detailed_features[segment_type] = segment_features
+        
+        import json
+        with open(self.paths['logs'] / 'selected_features_detailed.json', 'w') as f:
+            json.dump(detailed_features, f, indent=2)
+        
+        print("Feature selection results saved!")
+        print(f"\nFeature Selection Summary:")
+        print(feature_summary_df.head(10).to_string(index=False))
+        if len(feature_summary_df) > 10:
+            print(f"... and {len(feature_summary_df) - 10} more segments")
+
+    # MODIFY the _create_submission method to handle multiple predictions
+    def _create_submission(self, test_data: pd.DataFrame, all_predictions: Dict[str, np.ndarray]):
+        """Create multiple submission files with different prediction methods."""
+        print("\nCreating multiple submission files...")
+        
+        # Base submission data
+        base_submission = pd.DataFrame({
+            'Item_Identifier': test_data['Item_Identifier'],
+            'Outlet_Identifier': test_data['Outlet_Identifier']
+        })
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Create individual submission files
+        submission_files = {}
+        
+        submission_mapping = {
+            'outlet_type': 'submission_outlet_type_segments',
+            'outlet_identifier': 'submission_outlet_id_segments', 
+            'mrp_bins': 'submission_mrp_bin_segments',
+            'best_single': 'submission_best_single_model',
+            'combined': 'submission_weighted_average'
+        }
+        
+        for pred_type, predictions in all_predictions.items():
+            if pred_type in submission_mapping:
+                # Ensure no negative predictions
+                predictions_clean = np.maximum(predictions, 0)
+                
+                submission = base_submission.copy()
+                submission['Item_Outlet_Sales'] = predictions_clean
+                
+                # Save with timestamp
+                filename = f"{submission_mapping[pred_type]}_{timestamp}.csv"
+                filepath = self.paths['submissions'] / filename
+                submission.to_csv(filepath, index=False)
+                
+                # Also save as latest
+                latest_filename = f"{submission_mapping[pred_type]}_latest.csv"
+                latest_filepath = self.paths['submissions'] / latest_filename
+                submission.to_csv(latest_filepath, index=False)
+                
+                submission_files[pred_type] = {
+                    'filepath': filepath,
+                    'predictions': predictions_clean
+                }
+                
+                print(f"✓ {submission_mapping[pred_type]}.csv")
+        
+        # Create submission comparison summary
+        self._create_submission_summary(submission_files, timestamp)
+        
+        print(f"\nAll submissions saved to: {self.paths['submissions']}")
+
+    def _create_submission_summary(self, submission_files: Dict, timestamp: str):
+        """Create a summary comparing all submission approaches."""
+        
+        summary_data = []
+        
+        for pred_type, file_info in submission_files.items():
+            predictions = file_info['predictions']
+            
+            summary_data.append({
+                'Submission_Type': pred_type,
+                'Mean_Prediction': predictions.mean(),
+                'Std_Prediction': predictions.std(),
+                'Min_Prediction': predictions.min(),
+                'Max_Prediction': predictions.max(),
+                'Median_Prediction': np.median(predictions),
+                'Zero_Predictions': (predictions == 0).sum(),
+                'File_Path': file_info['filepath'].name
+            })
+        
+        summary_df = pd.DataFrame(summary_data)
+        
+        # Save summary
+        summary_path = self.paths['logs'] / f'submission_comparison_{timestamp}.csv'
+        summary_df.to_csv(summary_path, index=False)
+        
+        # Also save as latest
+        latest_summary_path = self.paths['logs'] / 'submission_comparison_latest.csv'
+        summary_df.to_csv(latest_summary_path, index=False)
+        
+        print("\nSubmission Comparison Summary:")
+        print(summary_df.round(2).to_string(index=False))
+        
+        # Identify best and worst predictions by variance
+        most_confident = summary_df.loc[summary_df['Std_Prediction'].idxmin(), 'Submission_Type']
+        least_confident = summary_df.loc[summary_df['Std_Prediction'].idxmax(), 'Submission_Type']
+        
+        print(f"\nMost confident model (lowest std): {most_confident}")
+        print(f"Least confident model (highest std): {least_confident}")
+    
     def _print_summary(self):
         """Print pipeline execution summary."""
         end_time = datetime.now()
@@ -336,16 +533,36 @@ class BigMartSegmentedPipeline:
         print(f"Loss Function: Weighted RMSE")
         print(f"Target Transform: Box-Cox")
         print(f"Segments: Outlet Type, Outlet ID, MRP Bins")
+        print(f"Feature Selection: RF Importance + RFE")
         print(f"Start time: {self.run_info['start_time']}")
         print(f"End time: {end_time}")
         print(f"Total time: {total_time:.1f} seconds")
         print(f"Steps completed: {', '.join(self.run_info['steps_completed'])}")
-        print("\nOutput files:")
+        
+        print("\nOutput files generated:")
         print(f"  - Cleaned data: {self.paths['processed']}")
         print(f"  - Featured data: {self.paths['processed']}")
         print(f"  - Segmented models: {self.paths['models']}")
-        print(f"  - Segment analysis: {self.paths['logs']}")
-        print(f"  - Submission: {self.paths['submissions']}")
+        print(f"  - Train predictions: {self.paths['processed'] / 'train_predictions_analysis.csv'}")
+        print(f"  - Feature selection results: {self.paths['logs']}")
+        print(f"  - Multiple submissions: {self.paths['submissions']}")
+        print(f"  - Model analysis: {self.paths['logs']}")
+        
+        # Show submission files created
+        submission_files = [
+            'submission_outlet_type_segments_latest.csv',
+            'submission_outlet_id_segments_latest.csv',
+            'submission_mrp_bin_segments_latest.csv',
+            'submission_best_single_model_latest.csv',
+            'submission_weighted_average_latest.csv'
+        ]
+        
+        print("\nSubmission files created:")
+        for filename in submission_files:
+            filepath = self.paths['submissions'] / filename
+            if filepath.exists():
+                print(f"  ✓ {filename}")
+        
         print("="*60)
         
         # Print final model information
@@ -353,7 +570,20 @@ class BigMartSegmentedPipeline:
             print("\nFinal Model Performance:")
             summary_df = pd.read_csv(self.paths['logs'] / 'segment_summary_scores.csv')
             print(summary_df.to_string(index=False))
-
+        
+        # Print train prediction metrics if available
+        if (self.paths['logs'] / 'train_prediction_metrics.csv').exists():
+            print("\nTrain Prediction Performance:")
+            train_metrics = pd.read_csv(self.paths['logs'] / 'train_prediction_metrics.csv')
+            print(train_metrics.to_string(index=False))
+        
+        # Print feature selection summary if available
+        if (self.paths['logs'] / 'feature_selection_summary.csv').exists():
+            print("\nFeature Selection Summary (Top 5 segments):")
+            feature_summary = pd.read_csv(self.paths['logs'] / 'feature_selection_summary.csv')
+            print(feature_summary.head().to_string(index=False))
+        
+        print("\nAll outputs ready for analysis and submission!")
 
 def main():
     """Main entry point for the segmented pipeline."""
@@ -386,7 +616,7 @@ if __name__ == "__main__":
     data_path = "/Users/whysocurious/Documents/MLDSAIProjects/SalesPred_Hackathon/data"
     
     # Run with hyperparameter optimization for segmented models
-    pipeline = BigMartSegmentedPipeline(data_path, optimize_hyperparams=True, n_trials=75)
+    pipeline = BigMartSegmentedPipeline(data_path, optimize_hyperparams=True, n_trials=200)
     
     # Run full pipeline
     pipeline.run_pipeline()
