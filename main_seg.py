@@ -1,8 +1,10 @@
 """
-BigMart Sales Prediction Pipeline
-Main script to run the complete ML pipeline from raw data to predictions.
+BigMart Sales Prediction Pipeline - Segmented Models Version
+Main script to run the complete ML pipeline with segmented Random Forest models,
+custom weighted RMSE loss, and Box-Cox transformation.
 """
 
+from typing import Dict
 import pandas as pd
 import numpy as np
 import os
@@ -10,17 +12,18 @@ from pathlib import Path
 import time
 from datetime import datetime
 
-# Import custom modules
-from src.ingest.ingest import load_and_preprocess_data
+# Import custom modules (updated imports)
+from src.ingest.ingest import load_and_preprocess_data, DataPreprocessor
 from src.transform.feature_engineering import create_features
 from src.transform.feature_encoder import encode_features
-from src.train.model_trainer import train_models
+from src.train.segmented_model_trainer import train_segmented_models
 
 
-class BigMartPipeline:
+class BigMartSegmentedPipeline:
     """
-    Complete pipeline for BigMart sales prediction.
-    Handles data flow from raw inputs to final predictions.
+    Complete pipeline for BigMart sales prediction using segmented models.
+    Handles data flow from raw inputs to final predictions with separate models
+    for different outlet types, outlet identifiers, and MRP bins.
     """
     
     def __init__(self, base_path: str, optimize_hyperparams: bool = True, n_trials: int = 50):
@@ -32,6 +35,7 @@ class BigMartPipeline:
             'start_time': datetime.now(),
             'steps_completed': []
         }
+        self.preprocessor = None  # Store preprocessor for segment extraction
 
     def _setup_directory_structure(self) -> dict:
         """Create necessary directories and return path dictionary."""
@@ -51,7 +55,7 @@ class BigMartPipeline:
     
     def run_pipeline(self, skip_steps: list = None):
         """
-        Run the complete ML pipeline.
+        Run the complete segmented ML pipeline.
         
         Args:
             skip_steps: List of step names to skip if already completed
@@ -59,7 +63,8 @@ class BigMartPipeline:
         skip_steps = skip_steps or []
         
         print("="*60)
-        print("BigMart Sales Prediction Pipeline")
+        print("BigMart Segmented Sales Prediction Pipeline")
+        print("Features: Random Forest Models per Segment + Weighted RMSE + Box-Cox")
         print(f"Started at: {self.run_info['start_time']}")
         print("="*60)
         
@@ -94,9 +99,9 @@ class BigMartPipeline:
             X_test = pd.read_csv(self.paths['processed'] / 'test_encoded.csv')
             y_train = train_features['Item_Outlet_Sales']
             
-        # Step 4: Model Training and Prediction
-        print("\n[Step 4/4] Model Training and Prediction")
-        predictions = self._run_model_training(X_train, X_test, y_train, train_features)
+        # Step 4: Segmented Model Training and Prediction
+        print("\n[Step 4/4] Segmented Model Training and Prediction")
+        predictions = self._run_segmented_model_training(X_train, X_test, y_train, train_features, test_features)
         self.run_info['steps_completed'].append('modeling')
         
         # Create final submission
@@ -109,6 +114,10 @@ class BigMartPipeline:
         """Run data ingestion and cleaning step."""
         start_time = time.time()
         
+        # Initialize preprocessor and store it for later use
+        self.preprocessor = DataPreprocessor()
+        
+        # Load and preprocess data
         train_clean, test_clean = load_and_preprocess_data(
             str(self.paths['raw'])
         )
@@ -154,54 +163,106 @@ class BigMartPipeline:
         
         return X_train, X_test, y_train
     
-    def _run_model_training(self, X_train: pd.DataFrame, X_test: pd.DataFrame,
-                           y_train: pd.Series, train_features: pd.DataFrame) -> np.ndarray:
-        """Run model training and prediction step."""
+    def _run_segmented_model_training(self, X_train: pd.DataFrame, X_test: pd.DataFrame,
+                                    y_train: pd.Series, train_features: pd.DataFrame, 
+                                    test_features: pd.DataFrame) -> np.ndarray:
+        """Run segmented model training and prediction step."""
         start_time = time.time()
         
-        # Get stratification column
-        outlet_types = train_features['Outlet_Type']
+        print("Preparing segment information...")
         
-        scores, predictions, train_pred = train_models(
+        # Initialize preprocessor if not already done
+        if self.preprocessor is None:
+            self.preprocessor = DataPreprocessor()
+            # Fit on training features to get consistent segment definitions
+            self.preprocessor.fit(train_features)
+        
+        # Extract segment information for both train and test
+        segment_info_train = self.preprocessor.get_segment_info(train_features)
+        segment_info_test = self.preprocessor.get_segment_info(test_features)
+        
+        print(f"Train segments shape: {segment_info_train.shape}")
+        print(f"Test segments shape: {segment_info_test.shape}")
+        
+        # Print segment distributions
+        print("\nSegment distributions:")
+        for col in ['Outlet_Type', 'Item_MRP_Bins','Outlet_Identifier']:
+            if col in segment_info_train.columns:
+                print(f"\n{col} distribution (train):")
+                print(segment_info_train[col].value_counts())
+        
+        # Save segment information
+        segment_info_train.to_csv(self.paths['processed'] / 'segment_info_train.csv', index=False)
+        segment_info_test.to_csv(self.paths['processed'] / 'segment_info_test.csv', index=False)
+        
+        # Train segmented models
+        scores, predictions = train_segmented_models(
             X_train_path=str(self.paths['processed'] / 'train_encoded.csv'),
             y_train=y_train,
             X_test_path=str(self.paths['processed'] / 'test_encoded.csv'),
-            outlet_types=outlet_types,
+            segment_info_train=segment_info_train,
+            segment_info_test=segment_info_test,
             output_dir=str(self.paths['models']),
             optimize_hyperparams=self.optimize_hyperparams,
             n_trials=self.n_trials
         )
         
         # Save model scores
-        scores_df = pd.DataFrame(list(scores.items()), columns=['Model', 'RMSE'])
-        scores_df.to_csv(self.paths['logs'] / 'model_scores.csv', index=False)
-        
-        # Create train predictions
-        train_df = pd.read_csv(str(self.paths['processed'] / 'train_features.csv'))
-        train_df['Pred_Item_Outlet_Sales'] = np.expm1(train_pred)
-        train_df['log_sales'] = train_df['Item_Outlet_Sales']
-        train_df['Item_Outlet_Sales'] = np.expm1(train_df['Item_Outlet_Sales'])
-            
-        train_df.to_csv(str(self.paths['processed'] / 'train_predicted.csv'), index=False)
-        print("\nTrain predictions file created for analysis!")
+        self._save_segmented_scores(scores)
         
         elapsed = time.time() - start_time
-        print(f"Model training completed in {elapsed:.1f} seconds")
+        print(f"Segmented model training completed in {elapsed:.1f} seconds")
         
         return predictions
+    
+    def _save_segmented_scores(self, scores: Dict[str, Dict]):
+        """Save segmented model scores to files."""
+        
+        # Create comprehensive scores summary
+        all_scores = []
+        
+        for segment_type, segment_scores in scores.items():
+            for segment, score in segment_scores.items():
+                all_scores.append({
+                    'Segment_Type': segment_type,
+                    'Segment': segment,
+                    'Weighted_RMSE': score
+                })
+        
+        scores_df = pd.DataFrame(all_scores)
+        scores_df.to_csv(self.paths['logs'] / 'segmented_model_scores.csv', index=False)
+        
+        # Create summary by segment type
+        summary_scores = []
+        for segment_type, segment_scores in scores.items():
+            avg_score = np.mean(list(segment_scores.values()))
+            min_score = np.min(list(segment_scores.values()))
+            max_score = np.max(list(segment_scores.values()))
+            n_models = len(segment_scores)
+            
+            summary_scores.append({
+                'Segment_Type': segment_type,
+                'Avg_Weighted_RMSE': avg_score,
+                'Min_Weighted_RMSE': min_score,
+                'Max_Weighted_RMSE': max_score,
+                'Num_Models': n_models
+            })
+        
+        summary_df = pd.DataFrame(summary_scores)
+        summary_df.to_csv(self.paths['logs'] / 'segment_summary_scores.csv', index=False)
+        
+        print("\nSegmented Model Performance Summary:")
+        print(summary_df.to_string(index=False))
     
     def _create_submission(self, test_data: pd.DataFrame, predictions: np.ndarray):
         """Create submission file with predictions."""
         print("\nCreating submission file...")
         
-        # Handle log transformation if used
-        if 'log_sales' in test_data.columns:
-            print("Note: Predictions are on original scale (inverse log applied)")
-            
+        # Note: predictions are already on original scale from segmented models
         submission = pd.DataFrame({
             'Item_Identifier': test_data['Item_Identifier'],
             'Outlet_Identifier': test_data['Outlet_Identifier'],
-            'Item_Outlet_Sales': np.expm1(predictions)
+            'Item_Outlet_Sales': predictions
         })
         
         # Ensure no negative predictions
@@ -209,27 +270,72 @@ class BigMartPipeline:
         
         # Save with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        submission_path = self.paths['submissions'] / f'submission_{timestamp}.csv'
+        submission_path = self.paths['submissions'] / f'segmented_submission_{timestamp}.csv'
         submission.to_csv(submission_path, index=False)
         
         # Also save as latest
-        submission.to_csv(self.paths['submissions'] / 'submission_latest.csv', index=False)
+        submission.to_csv(self.paths['submissions'] / 'segmented_submission_latest.csv', index=False)
         
-        print(f"Submission saved to: {submission_path}")
+        print(f"Segmented submission saved to: {submission_path}")
         print(f"Prediction statistics:")
-        print(f"  Mean: {np.expm1(predictions).mean():.2f}")
-        print(f"  Std: {np.expm1(predictions).std():.2f}")
-        print(f"  Min: {np.expm1(predictions).min():.2f}")
-        print(f"  Max: {np.expm1(predictions).max():.2f}")
+        print(f"  Mean: {predictions.mean():.2f}")
+        print(f"  Std: {predictions.std():.2f}")
+        print(f"  Min: {predictions.min():.2f}")
+        print(f"  Max: {predictions.max():.2f}")
+        print(f"  Median: {np.median(predictions):.2f}")
         
+        # Create prediction analysis
+        self._analyze_predictions(test_data, predictions, submission_path.parent)
+    
+    def _analyze_predictions(self, test_data: pd.DataFrame, predictions: np.ndarray, output_dir: Path):
+        """Create detailed prediction analysis."""
+        print("Creating prediction analysis...")
+        
+        # Load segment information
+        segment_info = pd.read_csv(self.paths['processed'] / 'segment_info_test.csv')
+        
+        # Create analysis dataframe
+        analysis_df = pd.DataFrame({
+            'Item_Identifier': test_data['Item_Identifier'],
+            'Outlet_Identifier': test_data['Outlet_Identifier'],
+            'Outlet_Type': segment_info['Outlet_Type'],
+            'Item_MRP_Bins': segment_info['Item_MRP_Bins'],
+            'Predicted_Sales': predictions
+        })
+        
+        # Analysis by segment type
+        segment_analysis = []
+        
+        for segment_type in ['Outlet_Type', 'Item_MRP_Bins']:
+            segment_stats = analysis_df.groupby(segment_type)['Predicted_Sales'].agg([
+                'count', 'mean', 'std', 'min', 'max', 'median'
+            ]).round(2)
+            
+            segment_stats['Segment_Type'] = segment_type
+            segment_stats['Segment'] = segment_stats.index
+            segment_analysis.append(segment_stats.reset_index(drop=True))
+        
+        # Combine and save analysis
+        full_analysis = pd.concat(segment_analysis, ignore_index=True)
+        full_analysis.to_csv(output_dir / 'prediction_analysis_by_segment.csv', index=False)
+        
+        # Save detailed predictions
+        analysis_df.to_csv(output_dir / 'detailed_predictions.csv', index=False)
+        
+        print("Prediction analysis completed!")
+    
     def _print_summary(self):
         """Print pipeline execution summary."""
         end_time = datetime.now()
         total_time = (end_time - self.run_info['start_time']).total_seconds()
         
         print("\n" + "="*60)
-        print("Pipeline Execution Summary")
+        print("Segmented Pipeline Execution Summary")
         print("="*60)
+        print(f"Pipeline Type: Segmented Random Forest Models")
+        print(f"Loss Function: Weighted RMSE")
+        print(f"Target Transform: Box-Cox")
+        print(f"Segments: Outlet Type, Outlet ID, MRP Bins")
         print(f"Start time: {self.run_info['start_time']}")
         print(f"End time: {end_time}")
         print(f"Total time: {total_time:.1f} seconds")
@@ -237,16 +343,23 @@ class BigMartPipeline:
         print("\nOutput files:")
         print(f"  - Cleaned data: {self.paths['processed']}")
         print(f"  - Featured data: {self.paths['processed']}")
-        print(f"  - Models: {self.paths['models']}")
+        print(f"  - Segmented models: {self.paths['models']}")
+        print(f"  - Segment analysis: {self.paths['logs']}")
         print(f"  - Submission: {self.paths['submissions']}")
         print("="*60)
+        
+        # Print final model information
+        if (self.paths['logs'] / 'segment_summary_scores.csv').exists():
+            print("\nFinal Model Performance:")
+            summary_df = pd.read_csv(self.paths['logs'] / 'segment_summary_scores.csv')
+            print(summary_df.to_string(index=False))
 
 
 def main():
-    """Main entry point for the pipeline."""
+    """Main entry point for the segmented pipeline."""
     import argparse
     
-    parser = argparse.ArgumentParser(description='BigMart Sales Prediction Pipeline')
+    parser = argparse.ArgumentParser(description='BigMart Segmented Sales Prediction Pipeline')
     parser.add_argument('--data-path', type=str, required=True,
                        help='Base path for data directory')
     parser.add_argument('--skip-steps', nargs='+', default=[],
@@ -260,7 +373,7 @@ def main():
     args = parser.parse_args()
     
     # Initialize and run pipeline
-    pipeline = BigMartPipeline(
+    pipeline = BigMartSegmentedPipeline(
         args.data_path, 
         optimize_hyperparams=not args.no_hyperparam_tuning,
         n_trials=args.n_trials
@@ -272,12 +385,12 @@ if __name__ == "__main__":
     # For direct execution without command line args
     data_path = "/Users/whysocurious/Documents/MLDSAIProjects/SalesPred_Hackathon/data"
     
-    # Run with hyperparameter optimization (default)
-    pipeline = BigMartPipeline(data_path, optimize_hyperparams=True, n_trials=150)
+    # Run with hyperparameter optimization for segmented models
+    pipeline = BigMartSegmentedPipeline(data_path, optimize_hyperparams=True, n_trials=75)
     
     # Run full pipeline
     pipeline.run_pipeline()
     
     # Or run without hyperparameter tuning for faster results
-    # pipeline = BigMartPipeline(data_path, optimize_hyperparams=False)
+    # pipeline = BigMartSegmentedPipeline(data_path, optimize_hyperparams=False)
     # pipeline.run_pipeline(skip_steps=['ingest', 'features'])

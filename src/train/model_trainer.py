@@ -1,11 +1,10 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import KFold, cross_val_score, train_test_split, StratifiedKFold
-from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import make_scorer, mean_squared_error
-import xgboost as xgb
-import lightgbm as lgb
+from sklearn.preprocessing import PowerTransformer
+from scipy import stats
 from typing import Dict, List, Tuple, Optional, Any
 import joblib
 import matplotlib.pyplot as plt
@@ -17,719 +16,621 @@ warnings.filterwarnings('ignore')
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-class ModelTrainer:
+class StratifiedModelTrainer:
     """
-    Handles model training, evaluation, and prediction for BigMart sales.
-    Supports multiple algorithms and ensemble methods.
+    Trains separate Random Forest models for different strata (Outlet_Type, Outlet_Identifier, Item_MRP_Bins).
+    Uses weighted RMSE loss and Box-Cox transformation for target variable.
     """
     
     def __init__(self, optimize_hyperparams: bool = True, n_trials: int = 50):
         self.models = {}
+        self.transformers = {}
         self.scores = {}
         self.feature_importance = {}
-        self.best_model = None
-        self.ensemble_weights = None
+        self.strata_info = {}
         self.optimize_hyperparams = optimize_hyperparams
         self.n_trials = n_trials
         self.best_params = {}
         self.study_results = {}
+        self.weights = {}
         
-    def train_all_models(self, X_train: pd.DataFrame, y_train: pd.Series,
-                        stratify_col: Optional[pd.Series] = None,
-                        val_size: float = 0.2) -> Dict[str, float]:
+    def prepare_target_transformation(self, y_train: pd.Series, 
+                                    strata_col: pd.Series) -> pd.Series:
         """
-        Train multiple models and evaluate performance.
+        Apply Box-Cox transformation to target variable for each stratum.
+        
+        Args:
+            y_train: Target variable (original scale)
+            strata_col: Stratification column
+            
+        Returns:
+            Transformed target variable
+        """
+        print("Applying Box-Cox transformation to target variable...")
+        
+        y_transformed = y_train.copy()
+        self.transformers = {}
+        
+        for stratum in strata_col.unique():
+            mask = strata_col == stratum
+            y_stratum = y_train[mask]
+            
+            # Ensure positive values for Box-Cox
+            y_positive = y_stratum + 1 if y_stratum.min() <= 0 else y_stratum
+            
+            # Apply Box-Cox transformation
+            transformer = PowerTransformer(method='box-cox', standardize=False)
+            y_stratum_transformed = transformer.fit_transform(y_positive.values.reshape(-1, 1)).flatten()
+            
+            self.transformers[stratum] = transformer
+            y_transformed[mask] = y_stratum_transformed
+            
+            print(f"Stratum {stratum}: lambda={transformer.lambdas_[0]:.3f}, "
+                  f"skewness: {stats.skew(y_stratum):.3f} -> {stats.skew(y_stratum_transformed):.3f}")
+        
+        return y_transformed
+    
+    def inverse_transform_predictions(self, predictions: np.ndarray, 
+                                    strata_col: pd.Series) -> np.ndarray:
+        """
+        Apply inverse Box-Cox transformation to predictions.
+        
+        Args:
+            predictions: Transformed predictions
+            strata_col: Stratification column
+            
+        Returns:
+            Predictions on original scale
+        """
+        predictions_original = np.zeros_like(predictions)
+        
+        for stratum in strata_col.unique():
+            mask = strata_col == stratum
+            if np.any(mask):
+                transformer = self.transformers[stratum]
+                pred_stratum = predictions[mask].reshape(-1, 1)
+                pred_original = transformer.inverse_transform(pred_stratum).flatten()
+                
+                # Subtract 1 if we added it during transformation
+                if hasattr(self, '_added_one') and self._added_one.get(stratum, False):
+                    pred_original = pred_original - 1
+                    
+                predictions_original[mask] = pred_original
+        
+        return predictions_original
+    
+    def calculate_weighted_rmse(self, y_true: np.ndarray, y_pred: np.ndarray, 
+                               weights: np.ndarray = None) -> float:
+        """
+        Calculate weighted RMSE.
+        
+        Args:
+            y_true: True values
+            y_pred: Predicted values
+            weights: Sample weights
+            
+        Returns:
+            Weighted RMSE
+        """
+        if weights is None:
+            weights = np.ones(len(y_true))
+        weights = 1.0 / (y_true + 100)
+        
+        squared_errors = (y_true - y_pred) ** 2
+        weighted_mse = np.average(squared_errors, weights=weights)
+        return np.sqrt(weighted_mse)
+    
+    def compute_sample_weights(self, y: pd.Series, strata_col: pd.Series, 
+                              weight_method: str = 'inverse_variance') -> np.ndarray:
+        """
+        Compute sample weights based on target distribution.
+        
+        Args:
+            y: Target variable
+            strata_col: Stratification column
+            weight_method: Method for computing weights
+            
+        Returns:
+            Sample weights
+        """
+        weights = np.ones(len(y))
+        
+        if weight_method == 'inverse_variance':
+            for stratum in strata_col.unique():
+                mask = strata_col == stratum
+                stratum_var = y[mask].var()
+                if stratum_var > 0:
+                    weights[mask] = 1.0 / stratum_var
+                    
+        elif weight_method == 'frequency':
+            stratum_counts = strata_col.value_counts()
+            total_samples = len(y)
+            for stratum in strata_col.unique():
+                mask = strata_col == stratum
+                frequency_weight = total_samples / (len(stratum_counts) * stratum_counts[stratum])
+                weights[mask] = frequency_weight
+                
+        elif weight_method == 'sales_based':
+            # Higher weights for higher sales values
+            weights = y / y.mean()
+            
+        # Normalize weights
+        weights = weights / weights.mean()
+        self.weights = weights
+        
+        return weights
+    
+    def train_stratified_models(self, X_train: pd.DataFrame, y_train: pd.Series,
+                               outlet_type: pd.Series, outlet_id: pd.Series,
+                               mrp_bins: pd.Series, val_size: float = 0.2) -> Dict[str, float]:
+        """
+        Train separate models for different stratification schemes.
         
         Args:
             X_train: Training features
-            y_train: Training target
-            stratify_col: Column to use for stratified split
+            y_train: Training target (original scale)
+            outlet_type: Outlet type column
+            outlet_id: Outlet identifier column
+            mrp_bins: MRP bins column
             val_size: Validation set size
             
         Returns:
             Dictionary of model scores
         """
-        print("=== Model Training Pipeline ===")
+        print("=== Stratified Model Training Pipeline ===")
         
-        # Create train-validation split
-        X_tr, X_val, y_tr, y_val = self._create_validation_split(
-            X_train, y_train, stratify_col, val_size
-        )
+        # Define stratification schemes
+        stratification_schemes = {
+            'outlet_type': outlet_type,
+            'outlet_id': outlet_id,
+            'mrp_bins': mrp_bins
+        }
         
-        # Train different models
-        self._train_baseline(X_tr, X_val, y_tr, y_val)
-        self._train_linear_regression(X_tr, X_val, y_tr, y_val)
-        self._train_random_forest(X_tr, X_val, y_tr, y_val)
-        self._train_xgboost(X_tr, X_val, y_tr, y_val)
-        self._train_lightgbm(X_tr, X_val, y_tr, y_val)
+        overall_scores = {}
         
-        # Select best model
-        self._select_best_model()
-        
-        # Train ensemble if multiple good models
-        if len([s for s in self.scores.values() if s < 1200]) > 2:
-            self._train_ensemble(X_tr, X_val, y_tr, y_val)
-        
-        return self.scores
-    
-    def cross_validate(self, X_train: pd.DataFrame, y_train: pd.Series,
-                      stratify_col: Optional[pd.Series] = None,
-                      cv_folds: int = 5) -> Dict[str, Tuple[float, float]]:
-        """
-        Perform cross-validation for robust evaluation.
-        
-        Args:
-            X_train: Training features
-            y_train: Training target
-            stratify_col: Column for stratification
-            cv_folds: Number of CV folds
+        for scheme_name, strata_col in stratification_schemes.items():
+            print(f"\n--- Training models for {scheme_name} stratification ---")
             
-        Returns:
-            Dictionary of model names to (mean_score, std_score)
-        """
-        print("\n=== Cross-Validation ===")
-        
-        cv_scores = {}
-        
-        # Only CV the best performing models
-        top_models = ['XGBoost', 'LightGBM', 'Random Forest']
-        
-        for model_name in top_models:
-            if model_name in self.models:
-                print(f"Cross-validating {model_name}...")
-                scores = self._cv_single_model(
-                    self.models[model_name], 
-                    X_train, y_train, 
-                    stratify_col, cv_folds
+            # Apply Box-Cox transformation per stratum
+            y_transformed = self.prepare_target_transformation(y_train, strata_col)
+            
+            # Compute sample weights
+            sample_weights = self.compute_sample_weights(y_train, strata_col, 'inverse_variance')
+            
+            # Train models for each stratum
+            scheme_models = {}
+            scheme_scores = {}
+            scheme_importance = {}
+            
+            for stratum in strata_col.unique():
+                print(f"\nTraining model for {scheme_name} = {stratum}")
+                
+                # Get data for this stratum
+                mask = strata_col == stratum
+                X_stratum = X_train[mask]
+                y_stratum = y_transformed[mask]
+                weights_stratum = sample_weights[mask]
+                
+                if len(X_stratum) < 10:  # Skip if too few samples
+                    print(f"Skipping {stratum} - insufficient samples ({len(X_stratum)})")
+                    continue
+                
+                # Train-validation split
+                X_tr, X_val, y_tr, y_val, w_tr, w_val = train_test_split(
+                    X_stratum, y_stratum, weights_stratum,
+                    test_size=val_size, random_state=42
                 )
-                mean_score = np.mean(scores)
-                std_score = np.std(scores)
-                cv_scores[model_name] = (mean_score, std_score)
-                print(f"{model_name} CV RMSE: {mean_score:.2f} (+/- {std_score:.2f})")
                 
-        return cv_scores
-    
-    def get_feature_importance(self, featNames, top_n: int = 20) -> pd.DataFrame:
-        """
-        Get feature importance from tree-based models.
-        
-        Args:
-            top_n: Number of top features to return
-            
-        Returns:
-            DataFrame with feature importance
-        """
-        # if 'XGBoost' in self.models:
-        model = self.models['Random Forest']
-        importance = model.feature_importances_
-        # feature_names = model.get_booster().feature_names
-        feature_names = featNames
-
-        importance_df = pd.DataFrame({
-            'feature': feature_names,
-            'importance': importance
-        }).sort_values('importance', ascending=False)
-        
-        self.feature_importance['Random Forest'] = importance_df
-        
-        return importance_df.head(top_n)
-        # return pd.DataFrame()
-    
-    def predict(self, X_test: pd.DataFrame, model_name: Optional[str] = None) -> np.ndarray:
-        """
-        Make predictions using specified or best model.
-        
-        Args:
-            X_test: Test features
-            model_name: Specific model to use, or None for best/ensemble
-            
-        Returns:
-            Array of predictions
-        """
-        if model_name:
-            if model_name not in self.models:
-                raise ValueError(f"Model {model_name} not found")
-            return self.models[model_name].predict(X_test)
-        
-        # Use ensemble if available, otherwise best model
-        if 'Ensemble' in self.models:
-            return self._predict_ensemble(X_test)
-        elif self.best_model:
-            return self.models[self.best_model].predict(X_test)
-        else:
-            raise ValueError("No trained models available")
-    
-    def save_models(self, output_dir: str):
-        """Save trained models and optimization results to disk."""
-        import os
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for name, model in self.models.items():
-            if name != 'Baseline':  # Skip baseline
-                joblib.dump(model, f"{output_dir}/{name.lower().replace(' ', '_')}_model.pkl")
+                # Train Random Forest model
+                model, score, importance = self._train_single_rf_model(
+                    X_tr, X_val, y_tr, y_val, w_tr, w_val, 
+                    f"{scheme_name}_{stratum}"
+                )
                 
-        # Save ensemble weights if available
-        if self.ensemble_weights:
-            joblib.dump(self.ensemble_weights, f"{output_dir}/ensemble_weights.pkl")
-            
-        # Save best hyperparameters
-        if self.best_params:
-            joblib.dump(self.best_params, f"{output_dir}/best_hyperparameters.pkl")
-            
-        # Save optimization history
-        if self.study_results:
-            optim_history = {}
-            for model_name, study in self.study_results.items():
-                optim_history[model_name] = {
-                    'best_value': study.best_value,
-                    'best_params': study.best_params,
-                    'n_trials': len(study.trials),
-                    'values': [trial.value for trial in study.trials]
+                scheme_models[stratum] = model
+                scheme_scores[stratum] = score
+                scheme_importance[stratum] = importance
+                
+                # Store stratum info
+                self.strata_info[f"{scheme_name}_{stratum}"] = {
+                    'n_samples': len(X_stratum),
+                    'target_mean': y_train[mask].mean(),
+                    'target_std': y_train[mask].std()
                 }
-            joblib.dump(optim_history, f"{output_dir}/optimization_history.pkl")
             
-    def _create_validation_split(self, X: pd.DataFrame, y: pd.Series, 
-                               stratify_col: Optional[pd.Series], 
-                               val_size: float) -> Tuple:
-        """Create stratified train-validation split."""
-        print(f"Creating {int((1-val_size)*100)}/{int(val_size*100)} train/validation split...")
+            # Store models and scores
+            self.models[scheme_name] = scheme_models
+            self.scores[scheme_name] = scheme_scores
+            self.feature_importance[scheme_name] = scheme_importance
+            
+            # Calculate overall scheme score
+            scheme_score = np.mean(list(scheme_scores.values()))
+            overall_scores[scheme_name] = scheme_score
+            
+            print(f"\n{scheme_name} stratification overall score: {scheme_score:.4f}")
         
-        X_tr, X_val, y_tr, y_val = train_test_split(
-            X, y, test_size=val_size, random_state=42,
-            stratify=stratify_col
-        )
-        
-        print(f"Training set: {X_tr.shape}")
-        print(f"Validation set: {X_val.shape}")
-        
-        return X_tr, X_val, y_tr, y_val
+        return overall_scores
     
-    def _train_baseline(self, X_tr, X_val, y_tr, y_val):
-        """Train baseline mean predictor."""
-        print("\nTraining baseline model...")
+    def _train_single_rf_model(self, X_tr: pd.DataFrame, X_val: pd.DataFrame,
+                              y_tr: pd.Series, y_val: pd.Series,
+                              w_tr: np.ndarray, w_val: np.ndarray,
+                              model_name: str) -> Tuple[RandomForestRegressor, float, pd.DataFrame]:
+        """
+        Train a single Random Forest model with hyperparameter optimization.
         
-        mean_pred = y_tr.mean()
-        val_pred = np.full(len(y_val), mean_pred)
+        Args:
+            X_tr, X_val: Training and validation features
+            y_tr, y_val: Training and validation targets (transformed)
+            w_tr, w_val: Training and validation weights
+            model_name: Name for this model
+            
+        Returns:
+            Tuple of (model, weighted_rmse_score, feature_importance)
+        """
+        print(f"  Training Random Forest for {model_name}...")
+        print(f"  Training samples: {len(X_tr)}, Validation samples: {len(X_val)}")
         
-        rmse = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(val_pred)))
-        self.models['Baseline'] = lambda x: np.full(len(x), mean_pred)
-        self.scores['Baseline'] = rmse
-        
-        print(f"Baseline RMSE: {rmse:.2f}")
-        
-    def _train_linear_regression(self, X_tr, X_val, y_tr, y_val):
-        """Train linear regression model."""
-        print("Training Linear Regression...")
-        
-        model = LinearRegression()
-        model.fit(X_tr, y_tr)
-        val_pred = model.predict(X_val)
-        
-        rmse = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(val_pred)))
-        self.models['Linear Regression'] = model
-        self.scores['Linear Regression'] = rmse
-        
-        print(f"Linear Regression RMSE: {rmse:.2f}")
-        
-    def _train_random_forest(self, X_tr, X_val, y_tr, y_val):
-        """Train Random Forest model with optional hyperparameter tuning."""
-        print("Training Random Forest...")
-        
-        if self.optimize_hyperparams:
-            print("  Running Bayesian hyperparameter search...")
-            best_params = self._optimize_rf_params(X_tr, X_val, y_tr, y_val)
-            self.best_params['Random Forest'] = best_params
+        if self.optimize_hyperparams and len(X_tr) > 100:  # Only optimize if enough data
+            print("  Running hyperparameter optimization...")
+            best_params = self._optimize_rf_params_weighted(X_tr, y_tr, w_tr, model_name)
+            self.best_params[model_name] = best_params
             
             model = RandomForestRegressor(**best_params, random_state=42, n_jobs=-1)
         else:
+            # Use default parameters for small datasets
             model = RandomForestRegressor(
-                n_estimators=400,
-                max_depth=7,
-                min_samples_split=14,
-                min_samples_leaf=18,
-                max_features=1.0,
+                n_estimators=200,
+                max_depth=10,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                max_features='sqrt',
                 bootstrap=True,
                 random_state=42,
                 n_jobs=-1
             )
-            
-        model.fit(X_tr, y_tr)
+        
+        # Train model with sample weights
+        model.fit(X_tr, y_tr, sample_weight=w_tr)
+        
+        # Make predictions
         val_pred = model.predict(X_val)
         
-        rmse = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(val_pred)))
-        self.models['Random Forest'] = model
-        self.scores['Random Forest'] = rmse
+        # Calculate weighted RMSE on transformed scale
+        weighted_rmse = self.calculate_weighted_rmse(y_val, val_pred, w_val)
         
-        print(f"Random Forest RMSE: {rmse:.2f}")
-        if self.optimize_hyperparams:
-            print(f"  Best params: {best_params}")
+        # Feature importance
+        importance_df = pd.DataFrame({
+            'feature': X_tr.columns,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        print(f"  Model trained - Weighted RMSE: {weighted_rmse:.4f}")
+        
+        return model, weighted_rmse, importance_df
     
-    def _optimize_rf_params(self, X_tr, X_val, y_tr, y_val) -> dict:
-        """Optimize Random Forest hyperparameters using Optuna."""
+    def _optimize_rf_params_weighted(self, X_tr: pd.DataFrame, y_tr: pd.Series,
+                                   w_tr: np.ndarray, model_name: str) -> dict:
+        """
+        Optimize Random Forest hyperparameters using weighted cross-validation.
+        """
         
         def objective(trial):
             params = {
-                'n_estimators': trial.suggest_int('n_estimators', 200, 500),
-                'max_depth': trial.suggest_int('max_depth', 5, 15),
-                'min_samples_split': trial.suggest_int('min_samples_split', 10, 50),
-                'min_samples_leaf': trial.suggest_int('min_samples_leaf', 5, 30),
-                'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 0.3, 0.4, 0.5, 0.6, 0.7,]),
+                'n_estimators': trial.suggest_int('n_estimators', 100, 400),
+                'max_depth': trial.suggest_int('max_depth', 5, 20),
+                'min_samples_split': trial.suggest_int('min_samples_split', 5, 30),
+                'min_samples_leaf': trial.suggest_int('min_samples_leaf', 2, 15),
+                'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 0.3, 0.5, 0.7]),
                 'bootstrap': trial.suggest_categorical('bootstrap', [True, False])
             }
             
-            # model = RandomForestRegressor(**params, random_state=42, n_jobs=-1)
-            # model.fit(X_tr, y_tr)
-            # pred = model.predict(X_val)
-            # Use cross-validation instead of single train-val split
-            cv = KFold(n_splits=5, shuffle=True, random_state=42)
-            
+            # Use cross-validation with weights
+            cv = KFold(n_splits=min(5, len(X_tr) // 20), shuffle=True, random_state=42)
             fold_scores = []
-        
-            for fold, (train_idx, val_idx) in enumerate(cv.split(X_tr)):
+            
+            for train_idx, val_idx in cv.split(X_tr):
                 X_fold_train, X_fold_val = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
                 y_fold_train, y_fold_val = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
+                w_fold_train, w_fold_val = w_tr[train_idx], w_tr[val_idx]
                 
                 model = RandomForestRegressor(**params, random_state=42, n_jobs=-1)
-                model.fit(X_fold_train, y_fold_train)
+                model.fit(X_fold_train, y_fold_train, sample_weight=w_fold_train)
                 pred = model.predict(X_fold_val)
                 
-                # Calculate RMSE for this fold
-                fold_rmse = np.sqrt(mean_squared_error(np.expm1(y_fold_val), np.expm1(pred)))
+                # Calculate weighted RMSE
+                fold_rmse = self.calculate_weighted_rmse(y_fold_val, pred, w_fold_val)
                 fold_scores.append(fold_rmse)
             
             return np.mean(fold_scores)
-            # return np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(pred)))
-            
-            
+        
         sampler = TPESampler(seed=42)
         study = optuna.create_study(direction='minimize', sampler=sampler)
-        study.optimize(objective, n_trials=50,#self.n_trials,
-                        show_progress_bar=True)
+        study.optimize(objective, n_trials=min(self.n_trials, 30), show_progress_bar=True)
         
-        self.study_results['Random Forest'] = study
+        self.study_results[model_name] = study
         return study.best_params
-        
-    def _train_xgboost(self, X_tr, X_val, y_tr, y_val):
-        """Train XGBoost model with optional hyperparameter tuning."""
-        print("Training XGBoost...")
-        
-        if self.optimize_hyperparams:
-            print("  Running Bayesian hyperparameter search...")
-            best_params = self._optimize_xgb_params(X_tr, X_val, y_tr, y_val)
-            self.best_params['XGBoost'] = best_params
-            
-            model = xgb.XGBRegressor(**best_params, random_state=42, n_jobs=-1)
-        else:
-            model = xgb.XGBRegressor(
-                n_estimators=630,
-                max_depth=10,
-                learning_rate=0.03,
-                subsample=0.7,
-                colsample_bytree=0.85,
-                min_child_weight=8,
-                gamma=1.9,
-                reg_alpha=0.2,
-                reg_lambda=0.02,
-                random_state=42,
-                n_jobs=-1,
-                early_stopping_rounds=100
-            )
-        
-        # Use early stopping for better generalization
-        model.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
-        
-        val_pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(val_pred)))
-        self.models['XGBoost'] = model
-        self.scores['XGBoost'] = rmse
-        
-        print(f"XGBoost RMSE: {rmse:.2f}")
-        if self.optimize_hyperparams:
-            print(f"  Best params: {best_params}")
     
-    def _optimize_xgb_params(self, X_tr, X_val, y_tr, y_val) -> dict:
-        """Optimize XGBoost hyperparameters using Optuna."""
-
-        def objective(trial):
-            params = {
-                'n_estimators': trial.suggest_int('n_estimators', 800, 1500),
-                'max_depth': trial.suggest_int('max_depth', 3, 15),
-                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-                'gamma': trial.suggest_float('gamma', 1e-8, 0.1, log=True),
-                'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 0.1, log=True),
-                'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 0.1, log=True)
-            }
+    def predict_stratified(self, X_test: pd.DataFrame, 
+                          outlet_type_test: pd.Series,
+                          outlet_id_test: pd.Series,
+                          mrp_bins_test: pd.Series,
+                          strategy: str = 'ensemble') -> np.ndarray:
+        """
+        Make predictions using stratified models.
+        
+        Args:
+            X_test: Test features
+            outlet_type_test: Test outlet types
+            outlet_id_test: Test outlet identifiers
+            mrp_bins_test: Test MRP bins
+            strategy: Prediction strategy ('ensemble', 'best_scheme', or specific scheme)
             
-            # model = xgb.XGBRegressor(**params, random_state=42, n_jobs=-1, verbose=False)
-            # Use cross-validation
-            cv = KFold(n_splits=5, shuffle=True, random_state=42)
-            fold_scores = []
+        Returns:
+            Final predictions on original scale
+        """
+        print(f"Making stratified predictions using strategy: {strategy}")
+        
+        # Define test stratification
+        test_strata = {
+            'outlet_type': outlet_type_test,
+            'outlet_id': outlet_id_test,
+            'mrp_bins': mrp_bins_test
+        }
+        
+        if strategy == 'ensemble':
+            # Ensemble predictions from all schemes
+            all_predictions = []
+            scheme_weights = []
             
-            for fold, (train_idx, val_idx) in enumerate(cv.split(X_tr)):
-                X_fold_train, X_fold_val = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
-                y_fold_train, y_fold_val = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
-                
-                model = xgb.XGBRegressor(**params, early_stopping_rounds=100, random_state=42, n_jobs=-1, verbose=False)
-                model.fit(
-                    X_fold_train, y_fold_train,
-                    eval_set=[(X_fold_val, y_fold_val)],
-                    verbose=False
+            for scheme_name in self.models.keys():
+                scheme_pred = self._predict_single_scheme(
+                    X_test, test_strata[scheme_name], scheme_name
                 )
-                
-                pred = model.predict(X_fold_val)
-                fold_rmse = np.sqrt(mean_squared_error(np.expm1(y_fold_val), np.expm1(pred)))
-                fold_scores.append(fold_rmse)
+                if scheme_pred is not None:
+                    all_predictions.append(scheme_pred)
+                    # Weight by inverse of scheme score
+                    weight = 1.0 / (self.scores[scheme_name] if scheme_name in self.scores 
+                                   else np.mean(list(self.scores[scheme_name].values())))
+                    scheme_weights.append(weight)
             
-            return np.mean(fold_scores)
-            # model.fit(
-            #     X_tr, y_tr,
-            #     eval_set=[(X_val, y_val)],
-            #     # early_stopping_rounds=50,
-            #     verbose=False
-            # )
-            
-            # pred = model.predict(X_val)
-            # return np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(pred)))
-        
-        sampler = TPESampler(seed=42)
-        study = optuna.create_study(direction='minimize', sampler=sampler)
-        study.optimize(objective, n_trials=self.n_trials,
-                        show_progress_bar=True)
-        
-        self.study_results['XGBoost'] = study
-        return study.best_params
-        
-    def _train_lightgbm(self, X_tr, X_val, y_tr, y_val):
-        """Train LightGBM model with optional hyperparameter tuning."""
-        print("Training LightGBM...")
-        
-        if self.optimize_hyperparams:
-            print("  Running Bayesian hyperparameter search...")
-            best_params = self._optimize_lgb_params(X_tr, X_val, y_tr, y_val)
-            self.best_params['LightGBM'] = best_params
-            
-            model = lgb.LGBMRegressor(**best_params, random_state=42, verbose=-1)
-        else:
-            model = lgb.LGBMRegressor(
-                n_estimators=1100,
-                max_depth=5,
-                learning_rate=0.07,
-                feature_fraction=0.97,
-                bagging_fraction=0.8,
-                bagging_freq=2,
-                min_child_samples=55,
-                num_leaves=42,
-                lambda_l1=0.01,
-                lambda_l2=0.2,
-                random_state=42,
-                verbose=-1
-            )
-        
-        model.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
-            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
-        )
-        
-        val_pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(val_pred)))
-        self.models['LightGBM'] = model
-        self.scores['LightGBM'] = rmse
-        
-        print(f"LightGBM RMSE: {rmse:.2f}")
-        if self.optimize_hyperparams:
-            print(f"  Best params: {best_params}")
-    
-    def _optimize_lgb_params(self, X_tr, X_val, y_tr, y_val) -> dict:
-        """Optimize LightGBM hyperparameters using Optuna."""
-        
-        def objective(trial):
-            params = {
-                'n_estimators': trial.suggest_int('n_estimators', 600, 1200),
-                'max_depth': trial.suggest_int('max_depth', 3, 15),
-                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                'feature_fraction': trial.suggest_float('feature_fraction', 0.4, 1.0),
-                'bagging_fraction': trial.suggest_float('bagging_fraction', 0.4, 1.0),
-                'bagging_freq': trial.suggest_int('bagging_freq', 1, 7),
-                'min_child_samples': trial.suggest_int('min_child_samples', 5, 100),
-                'num_leaves': trial.suggest_int('num_leaves', 10, 200),
-                'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 1.0, log=True),
-                'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 1.0, log=True)
-            }
-            
-            # Ensure num_leaves is less than 2^max_depth
-            if params['num_leaves'] > 2 ** params['max_depth']:
-                params['num_leaves'] = 2 ** params['max_depth'] - 1
-            
-            # Manual cross-validation for early stopping
-            cv = KFold(n_splits=5, shuffle=True, random_state=42)
-            fold_scores = []
-            
-            for fold, (train_idx, val_idx) in enumerate(cv.split(X_tr)):
-                X_fold_train, X_fold_val = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
-                y_fold_train, y_fold_val = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
-                
-                model = lgb.LGBMRegressor(**params, random_state=42, verbose=-1)
-                model.fit(
-                    X_fold_train, y_fold_train,
-                    eval_set=[(X_fold_val, y_fold_val)],
-                    callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
-                )
-                
-                pred = model.predict(X_fold_val)
-                fold_rmse = np.sqrt(mean_squared_error(np.expm1(y_fold_val), np.expm1(pred)))
-                fold_scores.append(fold_rmse)
-            
-            return np.mean(fold_scores)
-            # model = lgb.LGBMRegressor(**params, random_state=42, verbose=-1)
-            # model.fit(
-            #     X_tr, y_tr,
-            #     eval_set=[(X_val, y_val)],
-            #     callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
-            # )
-            
-            # pred = model.predict(X_val)
-            # return np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(pred)))
-        
-        sampler = TPESampler(seed=42)
-        study = optuna.create_study(direction='minimize', sampler=sampler)
-        study.optimize(objective, n_trials=self.n_trials,
-                        show_progress_bar=True)
-        
-        self.study_results['LightGBM'] = study
-        return study.best_params
-        
-    def _train_ensemble(self, X_tr, X_val, y_tr, y_val):
-        """Train weighted ensemble of best models."""
-        print("Training ensemble...")
-        
-        # Get predictions from top models
-        ensemble_models = ['XGBoost', 'LightGBM', 'Random Forest']
-        predictions = {}
-        
-        for model_name in ensemble_models:
-            if model_name in self.models:
-                predictions[model_name] = self.models[model_name].predict(X_val)
-                
-        # Find optimal weights using simple grid search
-        best_score = float('inf')
-        best_weights = None
-        
-        # Try different weight combinations
-        for w1 in np.arange(0.2, 0.9, 0.1):
-            for w2 in np.arange(0.2, 0.9, 0.1):
-                w3 = 1 - w1 - w2
-                if w3 >= 0.1:  # Ensure meaningful weight
-                    weights = [w1, w2, w3]
-                    # weights = [0.3,0.1,0.6] ##########################
-                    ensemble_pred = sum(
-                        w * predictions[m] 
-                        for w, m in zip(weights, ensemble_models)
-                        if m in predictions
-                    )
-                    score = np.sqrt(mean_squared_error(np.expm1(y_val), np.expm1(ensemble_pred)))
-                    
-                    if score < best_score:
-                        best_score = score
-                        best_weights = weights
-                        
-        self.ensemble_weights = dict(zip(ensemble_models, best_weights))
-        self.scores['Ensemble'] = best_score
-        self.models['Ensemble'] = 'ensemble'  # Placeholder
-        
-        print(f"Ensemble RMSE: {best_score:.2f}")
-        print(f"Weights: {self.ensemble_weights}")
-        
-    def _predict_ensemble(self, X_test: pd.DataFrame) -> np.ndarray:
-        """Make ensemble predictions."""
-        predictions = []
-        
-        for model_name, weight in self.ensemble_weights.items():
-            if model_name in self.models:
-                pred = self.models[model_name].predict(X_test)
-                predictions.append(weight * pred)
-                
-        return sum(predictions)
-    
-    def _cv_single_model(self, model, X: pd.DataFrame, y: pd.Series,
-                        stratify_col: Optional[pd.Series], 
-                        cv_folds: int) -> List[float]:
-        """Perform CV for a single model."""
-        skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        scores = []
-        
-        # Use stratify column if provided
-        split_col = stratify_col if stratify_col is not None else np.zeros(len(X))
-        
-        for train_idx, val_idx in skf.split(X, split_col):
-            X_fold_tr = X.iloc[train_idx]
-            X_fold_val = X.iloc[val_idx]
-            y_fold_tr = y.iloc[train_idx]
-            y_fold_val = y.iloc[val_idx]
-            
-            # Clone model to avoid refitting
-            model_clone = model.__class__(**model.get_params())
-            
-            # Handle early stopping for boosting models
-            if isinstance(model_clone, (xgb.XGBRegressor, lgb.LGBMRegressor)):
-                if isinstance(model_clone, xgb.XGBRegressor):
-                    model_clone.fit(
-                        X_fold_tr, y_fold_tr,
-                        eval_set=[(X_fold_val, y_fold_val)],
-                        # early_stopping_rounds=50,
-                        verbose=False
-                    )
-                else:  # LightGBM
-                    model_clone.fit(
-                        X_fold_tr, y_fold_tr,
-                        eval_set=[(X_fold_val, y_fold_val)],
-                        callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)]
-                    )
+            if all_predictions:
+                # Weighted average of predictions
+                scheme_weights = np.array(scheme_weights) / np.sum(scheme_weights)
+                final_predictions = np.average(all_predictions, axis=0, weights=scheme_weights)
             else:
-                model_clone.fit(X_fold_tr, y_fold_tr)
+                raise ValueError("No valid predictions generated")
+                
+        elif strategy == 'best_scheme':
+            # Use best performing scheme
+            best_scheme = min(self.scores.keys(), 
+                            key=lambda k: np.mean(list(self.scores[k].values())))
+            final_predictions = self._predict_single_scheme(
+                X_test, test_strata[best_scheme], best_scheme
+            )
             
-            fold_pred = model_clone.predict(X_fold_val)
-            fold_rmse = np.sqrt(mean_squared_error(np.expm1(y_fold_val), np.expm1(fold_pred)))
-            scores.append(fold_rmse)
-            
-        return scores
+        else:
+            # Use specific scheme
+            if strategy not in self.models:
+                raise ValueError(f"Strategy {strategy} not available")
+            final_predictions = self._predict_single_scheme(
+                X_test, test_strata[strategy], strategy
+            )
+        
+        return final_predictions
     
-    def _select_best_model(self):
-        """Select best performing model."""
-        # Exclude baseline from selection
-        model_scores = {k: v for k, v in self.scores.items() if k != 'Baseline'}
-        self.best_model = min(model_scores, key=model_scores.get)
+    def _predict_single_scheme(self, X_test: pd.DataFrame, 
+                              strata_col: pd.Series, 
+                              scheme_name: str) -> np.ndarray:
+        """
+        Make predictions using models from a single stratification scheme.
+        """
+        predictions = np.zeros(len(X_test))
+        scheme_models = self.models[scheme_name]
         
-        print(f"\nBest model: {self.best_model} (RMSE: {self.scores[self.best_model]:.2f})")
+        for stratum in strata_col.unique():
+            mask = strata_col == stratum
+            
+            if stratum in scheme_models:
+                # Use stratum-specific model
+                model = scheme_models[stratum]
+                X_stratum = X_test[mask]
+                
+                if len(X_stratum) > 0:
+                    pred_transformed = model.predict(X_stratum)
+                    
+                    # Inverse transform predictions
+                    pred_original = self.inverse_transform_predictions(
+                        pred_transformed, pd.Series([stratum] * len(pred_transformed))
+                    )
+                    predictions[mask] = pred_original
+            else:
+                # Fallback to most similar stratum or overall model
+                print(f"Warning: No model for {stratum}, using fallback")
+                # Use model from most similar stratum (by sample size)
+                similar_stratum = max(scheme_models.keys(), 
+                                    key=lambda s: self.strata_info.get(f"{scheme_name}_{s}", {}).get('n_samples', 0))
+                model = scheme_models[similar_stratum]
+                
+                X_stratum = X_test[mask]
+                if len(X_stratum) > 0:
+                    pred_transformed = model.predict(X_stratum)
+                    pred_original = self.inverse_transform_predictions(
+                        pred_transformed, pd.Series([similar_stratum] * len(pred_transformed))
+                    )
+                    predictions[mask] = pred_original
+        
+        return predictions
     
-    def plot_model_comparison(self):
-        """Plot model performance comparison."""
-        plt.figure(figsize=(10, 6))
+    def cross_validate_stratified(self, X_train: pd.DataFrame, y_train: pd.Series,
+                                 outlet_type: pd.Series, outlet_id: pd.Series,
+                                 mrp_bins: pd.Series, cv_folds: int = 5) -> Dict[str, float]:
+        """
+        Perform cross-validation for stratified models.
+        """
+        print("\n=== Stratified Cross-Validation ===")
         
-        models = list(self.scores.keys())
-        scores = list(self.scores.values())
+        cv_scores = {}
         
-        # Create bar plot
-        bars = plt.bar(models, scores)
-        
-        # Color best model differently
-        best_idx = models.index(self.best_model) if self.best_model else -1
-        if best_idx >= 0:
-            bars[best_idx].set_color('darkgreen')
+        for scheme_name in self.models.keys():
+            print(f"Cross-validating {scheme_name} models...")
             
-        # Add value labels
-        for i, (model, score) in enumerate(zip(models, scores)):
-            plt.text(i, score + 10, f'{score:.1f}', ha='center', va='bottom')
+            scheme_strata = {
+                'outlet_type': outlet_type,
+                'outlet_id': outlet_id,
+                'mrp_bins': mrp_bins
+            }[scheme_name]
             
-        plt.xlabel('Model')
-        plt.ylabel('RMSE')
-        plt.title('Model Performance Comparison')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.show()
+            # Stratified CV
+            from sklearn.model_selection import StratifiedKFold
+            skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+            
+            fold_scores = []
+            for train_idx, val_idx in skf.split(X_train, scheme_strata):
+                # Training fold
+                X_fold_tr = X_train.iloc[train_idx]
+                y_fold_tr = y_train.iloc[train_idx]
+                strata_fold_tr = scheme_strata.iloc[train_idx]
+                
+                # Validation fold
+                X_fold_val = X_train.iloc[val_idx]
+                y_fold_val = y_train.iloc[val_idx]
+                strata_fold_val = scheme_strata.iloc[val_idx]
+                
+                # Train temporary models on fold
+                temp_trainer = StratifiedModelTrainer(optimize_hyperparams=False)
+                temp_trainer.train_stratified_models(
+                    X_fold_tr, y_fold_tr, strata_fold_tr, strata_fold_tr, strata_fold_tr
+                )
+                
+                # Predict on validation fold
+                fold_pred = temp_trainer._predict_single_scheme(
+                    X_fold_val, strata_fold_val, scheme_name
+                )
+                
+                # Calculate score
+                fold_rmse = np.sqrt(mean_squared_error(y_fold_val, fold_pred))
+                fold_scores.append(fold_rmse)
+            
+            cv_scores[scheme_name] = (np.mean(fold_scores), np.std(fold_scores))
+            print(f"{scheme_name} CV RMSE: {np.mean(fold_scores):.4f} ± {np.std(fold_scores):.4f}")
+        
+        return cv_scores
     
-    def plot_feature_importance(self, featNames, top_n: int = 20):
-        """Plot feature importance from best tree model."""
-        importance_df = self.get_feature_importance(featNames, top_n)
+    def get_feature_importance(self, scheme_name: str = None, top_n: int = 20) -> pd.DataFrame:
+        """
+        Get aggregated feature importance across all models in a scheme.
+        """
+        if scheme_name is None:
+            scheme_name = list(self.feature_importance.keys())[0]
         
-        if importance_df.empty:
-            print("No feature importance available")
-            return
+        if scheme_name not in self.feature_importance:
+            return pd.DataFrame()
+        
+        # Aggregate importance across all models in scheme
+        scheme_importance = self.feature_importance[scheme_name]
+        all_features = set()
+        for imp_df in scheme_importance.values():
+            all_features.update(imp_df['feature'].tolist())
+        
+        # Calculate weighted average importance
+        feature_scores = {}
+        for feature in all_features:
+            scores = []
+            weights = []
+            for stratum, imp_df in scheme_importance.items():
+                if feature in imp_df['feature'].values:
+                    score = imp_df[imp_df['feature'] == feature]['importance'].iloc[0]
+                    scores.append(score)
+                    # Weight by number of samples in stratum
+                    weight = self.strata_info.get(f"{scheme_name}_{stratum}", {}).get('n_samples', 1)
+                    weights.append(weight)
             
-        plt.figure(figsize=(10, 8))
+            if scores:
+                feature_scores[feature] = np.average(scores, weights=weights)
         
-        # Reverse order for horizontal bar plot
-        features = importance_df['feature'].iloc[::-1]
-        importances = importance_df['importance'].iloc[::-1]
+        # Create final importance DataFrame
+        importance_df = pd.DataFrame(
+            list(feature_scores.items()), 
+            columns=['feature', 'importance']
+        ).sort_values('importance', ascending=False)
         
-        plt.barh(range(len(features)), importances)
-        plt.yticks(range(len(features)), features)
-        plt.xlabel('Feature Importance')
-        plt.title(f'Top {top_n} Feature Importances (XGBoost)')
-        plt.tight_layout()
-        plt.show()
-
-
-    def plot_optimization_history(self, model_name: str = None):
-        """Plot hyperparameter optimization history."""
-        if not self.study_results:
-            print("No optimization history available")
-            return
+        return importance_df.head(top_n)
+    
+    def save_models(self, output_dir: str):
+        """Save all stratified models and metadata."""
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save models
+        for scheme_name, scheme_models in self.models.items():
+            scheme_dir = f"{output_dir}/{scheme_name}"
+            os.makedirs(scheme_dir, exist_ok=True)
             
-        models_to_plot = [model_name] if model_name else list(self.study_results.keys())
+            for stratum, model in scheme_models.items():
+                joblib.dump(model, f"{scheme_dir}/model_{stratum}.pkl")
         
-        fig, axes = plt.subplots(1, len(models_to_plot), figsize=(6*len(models_to_plot), 5))
-        if len(models_to_plot) == 1:
+        # Save transformers
+        joblib.dump(self.transformers, f"{output_dir}/transformers.pkl")
+        
+        # Save metadata
+        metadata = {
+            'strata_info': self.strata_info,
+            'scores': self.scores,
+            'best_params': self.best_params
+        }
+        joblib.dump(metadata, f"{output_dir}/metadata.pkl")
+        
+        print(f"All models saved to {output_dir}")
+    
+    def plot_stratified_performance(self):
+        """Plot performance comparison across stratification schemes."""
+        fig, axes = plt.subplots(1, len(self.scores), figsize=(5*len(self.scores), 6))
+        if len(self.scores) == 1:
             axes = [axes]
+        
+        for idx, (scheme_name, scheme_scores) in enumerate(self.scores.items()):
+            strata = list(scheme_scores.keys())
+            scores = list(scheme_scores.values())
             
-        for idx, name in enumerate(models_to_plot):
-            if name in self.study_results:
-                study = self.study_results[name]
-                trials = [trial.value for trial in study.trials]
-                
-                axes[idx].plot(trials, marker='o', markersize=4, alpha=0.6)
-                axes[idx].axhline(y=study.best_value, color='r', linestyle='--', 
-                                label=f'Best: {study.best_value:.2f}')
-                axes[idx].set_xlabel('Trial')
-                axes[idx].set_ylabel('RMSE')
-                axes[idx].set_title(f'{name} Optimization History')
-                axes[idx].legend()
-                axes[idx].grid(True, alpha=0.3)
-                
+            axes[idx].bar(range(len(strata)), scores)
+            axes[idx].set_xlabel('Stratum')
+            axes[idx].set_ylabel('Weighted RMSE')
+            axes[idx].set_title(f'{scheme_name} Performance')
+            axes[idx].set_xticks(range(len(strata)))
+            axes[idx].set_xticklabels(strata, rotation=45)
+            
+            # Add value labels
+            for i, score in enumerate(scores):
+                axes[idx].text(i, score + 0.01, f'{score:.3f}', ha='center', va='bottom')
+        
         plt.tight_layout()
         plt.show()
-    
-    def get_param_importance(self, model_name: str) -> pd.DataFrame:
-        """Get parameter importance from optimization study."""
-        if model_name not in self.study_results:
-            return pd.DataFrame()
-            
-        study = self.study_results[model_name]
-        
-        # Get parameter importance using fANOVA
-        try:
-            importance = optuna.importance.get_param_importances(study)
-            importance_df = pd.DataFrame(
-                list(importance.items()), 
-                columns=['parameter', 'importance']
-            ).sort_values('importance', ascending=False)
-            
-            return importance_df
-        except:
-            print(f"Could not calculate parameter importance for {model_name}")
-            return pd.DataFrame()
 
 
-def train_models(X_train_path: str, 
-                y_train: pd.Series,
-                X_test_path: str,
-                outlet_types: pd.Series,
-                output_dir: str,
-                optimize_hyperparams: bool = True,
-                n_trials: int = 50) -> Tuple[Dict[str, float], np.ndarray]:
+def train_stratified_models(X_train_path: str, y_train: pd.Series,
+                           X_test_path: str, outlet_type: pd.Series,
+                           outlet_id: pd.Series, mrp_bins: pd.Series,
+                           outlet_type_test: pd.Series, outlet_id_test: pd.Series,
+                           mrp_bins_test: pd.Series, output_dir: str,
+                           optimize_hyperparams: bool = True,
+                           n_trials: int = 50) -> Tuple[Dict[str, float], np.ndarray]:
     """
-    Main function to train models and generate predictions.
+    Main function to train stratified models and generate predictions.
     
     Args:
         X_train_path: Path to encoded training features
-        y_train: Training target values
+        y_train: Training target values (original scale)
         X_test_path: Path to encoded test features
-        outlet_types: Outlet types for stratification
-        output_dir: Directory to save models and predictions
-        optimize_hyperparams: Whether to run Bayesian hyperparameter optimization
-        n_trials: Number of trials for hyperparameter optimization
+        outlet_type, outlet_id, mrp_bins: Training stratification columns
+        outlet_type_test, outlet_id_test, mrp_bins_test: Test stratification columns
+        output_dir: Directory to save models
+        optimize_hyperparams: Whether to optimize hyperparameters
+        n_trials: Number of optimization trials
         
     Returns:
         Tuple of (model_scores, test_predictions)
     """
-    print("=== BigMart Model Training Pipeline ===")
+    print("=== Stratified BigMart Model Training Pipeline ===")
     
     # Load encoded data
     print("Loading encoded features...")
@@ -737,52 +638,50 @@ def train_models(X_train_path: str,
     X_test = pd.read_csv(X_test_path)
     
     # Initialize trainer
-    trainer = ModelTrainer(optimize_hyperparams=optimize_hyperparams, n_trials=n_trials)
+    trainer = StratifiedModelTrainer(optimize_hyperparams=optimize_hyperparams, n_trials=n_trials)
     
-    # Train all models
-    scores = trainer.train_all_models(X_train, y_train, outlet_types)
+    # Train stratified models
+    scores = trainer.train_stratified_models(
+        X_train, y_train, outlet_type, outlet_id, mrp_bins
+    )
     
     # Perform cross-validation
-    cv_scores = trainer.cross_validate(X_train, y_train, outlet_types)
+    cv_scores = trainer.cross_validate_stratified(
+        X_train, y_train, outlet_type, outlet_id, mrp_bins
+    )
     
     # Display results
-    print("\n=== Model Performance Summary ===")
-    for model_name, score in sorted(scores.items(), key=lambda x: x[1]):
+    print("\n=== Stratified Model Performance Summary ===")
+    for scheme_name, score in sorted(scores.items(), key=lambda x: x[1]):
         cv_info = ""
-        if model_name in cv_scores:
-            mean_cv, std_cv = cv_scores[model_name]
-            cv_info = f" (CV: {mean_cv:.2f} ± {std_cv:.2f})"
-        print(f"{model_name}: {score:.2f}{cv_info}")
+        if scheme_name in cv_scores:
+            mean_cv, std_cv = cv_scores[scheme_name]
+            cv_info = f" (CV: {mean_cv:.4f} ± {std_cv:.4f})"
+        print(f"{scheme_name}: {score:.4f}{cv_info}")
     
-    # Show hyperparameter optimization results
-    if optimize_hyperparams and trainer.study_results:
-        print("\n=== Hyperparameter Optimization Results ===")
-        for model_name in ['Random Forest', 'XGBoost', 'LightGBM']:
-            if model_name in trainer.best_params:
-                print(f"\n{model_name} optimal parameters:")
-                for param, value in trainer.best_params[model_name].items():
-                    print(f"  {param}: {value}")
-                    
-                # Show parameter importance
-                param_importance = trainer.get_param_importance(model_name)
-                if not param_importance.empty:
-                    print(f"\n{model_name} parameter importance:")
-                    print(param_importance.head())
+    # Plot performance
+    trainer.plot_stratified_performance()
     
-    # Plot comparisons
-    trainer.plot_model_comparison()
-    trainer.plot_feature_importance(X_train.columns)
+    # Show feature importance
+    for scheme_name in trainer.models.keys():
+        importance_df = trainer.get_feature_importance(scheme_name)
+        if not importance_df.empty:
+            print(f"\nTop 10 features for {scheme_name}:")
+            print(importance_df.head(10))
     
-    if optimize_hyperparams:
-        trainer.plot_optimization_history()
-    
-    # Generate train predictions
-    print("\n=== Generating Train Predictions ===")
-    train_predictions = trainer.predict(X_train)
-    
-    # Generate test predictions
+    # Generate test predictions using ensemble strategy
     print("\n=== Generating Test Predictions ===")
-    test_predictions = trainer.predict(X_test)
+    test_predictions = trainer.predict_stratified(
+        X_test, outlet_type_test, outlet_id_test, mrp_bins_test, 
+        strategy='ensemble'
+    )
+    
+    # Generate training predictions for analysis
+    print("Generating training predictions...")
+    train_predictions = trainer.predict_stratified(
+        X_train, outlet_type, outlet_id, mrp_bins,
+        strategy='ensemble'
+    )
     
     # Save models
     print(f"Saving models to {output_dir}...")
@@ -797,41 +696,35 @@ if __name__ == "__main__":
     
     # Setup paths
     data_dir = "/Users/whysocurious/Documents/MLDSAIProjects/SalesPred_Hackathon/data"
-    model_dir = f"{data_dir}/models"
+    model_dir = f"{data_dir}/models_stratified"
     os.makedirs(model_dir, exist_ok=True)
     
-    # Load target and stratification column
+    # Load data
     train_df = pd.read_csv(f"{data_dir}/processed/train_features.csv")
-    y_train = train_df['Item_Outlet_Sales']
-    outlet_types = train_df['Outlet_Type']
+    test_df = pd.read_csv(f"{data_dir}/processed/test_features.csv")
     
-    # Train models with hyperparameter optimization
-    scores, predictions, train_pred = train_models(
+    # Prepare target and stratification columns
+    y_train = train_df['Item_Outlet_Sales']  # Original scale
+    outlet_type = train_df['Outlet_Type']
+    outlet_id = train_df['Outlet_Identifier']
+    mrp_bins = train_df['Item_MRP_Bins']
+    
+    outlet_type_test = test_df['Outlet_Type']
+    outlet_id_test = test_df['Outlet_Identifier']
+    mrp_bins_test = test_df['Item_MRP_Bins']
+    
+    # Train stratified models
+    scores, predictions, train_pred = train_stratified_models(
         X_train_path=f"{data_dir}/processed/train_encoded.csv",
         y_train=y_train,
         X_test_path=f"{data_dir}/processed/test_encoded.csv",
-        outlet_types=outlet_types,
+        outlet_type=outlet_type,
+        outlet_id=outlet_id,
+        mrp_bins=mrp_bins,
+        outlet_type_test=outlet_type_test,
+        outlet_id_test=outlet_id_test,
+        mrp_bins_test=mrp_bins_test,
         output_dir=model_dir,
-        optimize_hyperparams=True,  # Enable Bayesian optimization
-        n_trials=50  # Number of optimization trials per model
-    )
-    
-    # Create submission
-    test_df = pd.read_csv(f"{data_dir}/processed/test_features.csv")
-    submission = pd.DataFrame({
-        'Item_Identifier': test_df['Item_Identifier'],
-        'Outlet_Identifier': test_df['Outlet_Identifier'],
-        'Item_Outlet_Sales': np.expm1(predictions)
-    })
-    
-    submission.to_csv(f"{data_dir}/submission.csv", index=False)
-    print("\nSubmission file created!")
-
-    # Create train predictions
-    train_df = pd.read_csv(f"{data_dir}/processed/train_features.csv")
-    train_df['Pred_Item_Outlet_Sales'] = np.expm1(train_pred)
-    train_df['log_sales'] = train_df['Item_Outlet_Sales']
-    train_df['Item_Outlet_Sales'] = np.expm1(train_df['Item_Outlet_Sales'])
-        
-    train_df.to_csv(f"{data_dir}/processed/train_predicted.csv", index=False)
-    print("\nTrain predictions file created for analysis!")
+        optimize_hyperparams=True,
+        n_trials=10
+    )    
