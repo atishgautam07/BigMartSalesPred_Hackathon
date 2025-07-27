@@ -1,7 +1,7 @@
 ============================================================
 BigMart Segmented Sales Prediction Pipeline
 Features: Random Forest Models per Segment + Weighted RMSE + Box-Cox
-Started at: 2025-07-27 13:52:57.048578
+Started at: 2025-07-27 11:00:53.234675
 ============================================================
 
 [Step 1/4] Data Ingestion and Cleaning
@@ -80,7 +80,7 @@ Supermarket Type3     624
 Supermarket Type2     618
 Name: count, dtype: int64
 Data preprocessing completed successfully!
-Data cleaning completed in 1.1 seconds
+Data cleaning completed in 1.0 seconds
 
 [Step 2/4] Feature Engineering
 === BigMart Feature Engineering Pipeline ===
@@ -137,7 +137,7 @@ Outlet_Total_Visibility        0.219985
 Item_Type_Outlet_Count         0.168149
 Items_In_Same_Category         0.168149
 Name: Item_Outlet_Sales, dtype: float64
-Feature engineering completed in 2.1 seconds
+Feature engineering completed in 1.7 seconds
 
 [Step 3/4] Feature Encoding
 === Feature Encoding Pipeline ===
@@ -165,7 +165,7 @@ Encoding test features...
 
 Encoded shapes - Train: (8523, 39), Test: (5681, 39)
 Total features after encoding: 39
-Feature encoding completed in 0.5 seconds
+Feature encoding completed in 0.4 seconds
 
 [Step 4/4] Segmented Model Training and Prediction
 Preparing segment information...
@@ -203,7 +203,6 @@ Training set: (6818, 39)
 Validation set: (1705, 39)
 
 === Training OUTLET_TYPE Segmented Models ===
-=== Training OUTLET_TYPE Segmented Models ===
 Training models for 4 outlet_type segments
 
 Training model for outlet_type: Supermarket Type1
@@ -212,10 +211,10 @@ Training model for outlet_type: Supermarket Type1
   Selecting features for outlet_type_Supermarket Type1...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1106.61, Selected: 1107.56
-Best trial: 0. Best value: 1235.25: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:12<00:00, 12.39s/it]
-  Best hyperparameters for Supermarket Type1: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1171.51
+    Validation RMSE - Important: 1105.57, Selected: 1108.12
+Best trial: 176. Best value: 1227.99: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [31:12<00:00,  9.36s/it]
+  Best hyperparameters for Supermarket Type1: {'n_estimators': 1077, 'max_depth': 3, 'min_samples_split': 88, 'min_samples_leaf': 47, 'max_features': 0.9, 'bootstrap': True}
+  Weighted RMSE: 1158.36
 
 Training model for outlet_type: Grocery Store
   Training samples: 859
@@ -223,10 +222,10 @@ Training model for outlet_type: Grocery Store
   Selecting features for outlet_type_Grocery Store...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 269.20, Selected: 269.23
-Best trial: 0. Best value: 258.903: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:03<00:00,  3.23s/it]
-  Best hyperparameters for Grocery Store: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 241.80
+    Validation RMSE - Important: 269.09, Selected: 269.44
+Best trial: 178. Best value: 254.041: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [08:32<00:00,  2.56s/it]
+  Best hyperparameters for Grocery Store: {'n_estimators': 51, 'max_depth': 2, 'min_samples_split': 81, 'min_samples_leaf': 72, 'max_features': 0.8, 'bootstrap': True}
+  Weighted RMSE: 242.23
 
 Training model for outlet_type: Supermarket Type3
   Training samples: 761
@@ -234,10 +233,10 @@ Training model for outlet_type: Supermarket Type3
   Selecting features for outlet_type_Supermarket Type3...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1627.88, Selected: 1636.38
-Best trial: 0. Best value: 1582.6: 100%|███████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.24s/it]
-  Best hyperparameters for Supermarket Type3: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1430.80
+    Validation RMSE - Important: 1635.87, Selected: 1633.14
+Best trial: 103. Best value: 1569: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [11:00<00:00,  3.30s/it]
+  Best hyperparameters for Supermarket Type3: {'n_estimators': 1498, 'max_depth': 27, 'min_samples_split': 77, 'min_samples_leaf': 74, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1461.07
 
 Training model for outlet_type: Supermarket Type2
   Training samples: 752
@@ -245,14 +244,14 @@ Training model for outlet_type: Supermarket Type2
   Selecting features for outlet_type_Supermarket Type2...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1109.81, Selected: 1110.48
-Best trial: 0. Best value: 1143.2: 100%|███████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.58s/it]
-  Best hyperparameters for Supermarket Type2: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1087.92
+    Validation RMSE - Important: 1113.09, Selected: 1111.50
+Best trial: 127. Best value: 1138.36: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [06:31<00:00,  1.96s/it]
+  Best hyperparameters for Supermarket Type2: {'n_estimators': 524, 'max_depth': 25, 'min_samples_split': 84, 'min_samples_leaf': 41, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1087.67
 
 OUTLET_TYPE segment summary:
   Models trained: 4
-  Average weighted RMSE: 983.01
+  Average weighted RMSE: 987.33
 
 === Training OUTLET_IDENTIFIER Segmented Models ===
 Training models for 10 outlet_identifier segments
@@ -263,10 +262,10 @@ Training model for outlet_identifier: OUT049
   Selecting features for outlet_identifier_OUT049...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1173.24, Selected: 1178.80
-Best trial: 0. Best value: 1195.52: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.94s/it]
-  Best hyperparameters for OUT049: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1174.91
+    Validation RMSE - Important: 1180.41, Selected: 1179.05
+Best trial: 182. Best value: 1189.96: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [08:36<00:00,  2.58s/it]
+  Best hyperparameters for OUT049: {'n_estimators': 268, 'max_depth': 28, 'min_samples_split': 71, 'min_samples_leaf': 57, 'max_features': 0.7, 'bootstrap': False}
+  Weighted RMSE: 1176.05
 
 Training model for outlet_identifier: OUT045
   Training samples: 736
@@ -274,10 +273,10 @@ Training model for outlet_identifier: OUT045
   Selecting features for outlet_identifier_OUT045...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1126.05, Selected: 1126.93
-Best trial: 0. Best value: 1233.77: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.38s/it]
-  Best hyperparameters for OUT045: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1168.34
+    Validation RMSE - Important: 1125.83, Selected: 1125.79
+Best trial: 92. Best value: 1225.15: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [10:03<00:00,  3.02s/it]
+  Best hyperparameters for OUT045: {'n_estimators': 939, 'max_depth': 10, 'min_samples_split': 55, 'min_samples_leaf': 74, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1166.66
 
 Training model for outlet_identifier: OUT046
   Training samples: 743
@@ -285,10 +284,10 @@ Training model for outlet_identifier: OUT046
   Selecting features for outlet_identifier_OUT046...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1049.00, Selected: 1052.83
-Best trial: 0. Best value: 1267.33: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.47s/it]
-  Best hyperparameters for OUT046: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1179.77
+    Validation RMSE - Important: 1055.71, Selected: 1056.69
+Best trial: 159. Best value: 1250.11: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [03:27<00:00,  1.04s/it]
+  Best hyperparameters for OUT046: {'n_estimators': 53, 'max_depth': 13, 'min_samples_split': 18, 'min_samples_leaf': 52, 'max_features': 0.7, 'bootstrap': True}
+  Weighted RMSE: 1186.82
 
 Training model for outlet_identifier: OUT019
   Training samples: 413
@@ -296,10 +295,10 @@ Training model for outlet_identifier: OUT019
   Selecting features for outlet_identifier_OUT019...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 232.50, Selected: 233.06
-Best trial: 0. Best value: 246.489: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.29s/it]
-  Best hyperparameters for OUT019: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 231.93
+    Validation RMSE - Important: 232.91, Selected: 234.05
+Best trial: 198. Best value: 239.919: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [06:26<00:00,  1.93s/it]
+  Best hyperparameters for OUT019: {'n_estimators': 708, 'max_depth': 27, 'min_samples_split': 100, 'min_samples_leaf': 38, 'max_features': 0.7, 'bootstrap': True}
+  Weighted RMSE: 232.43
 
 Training model for outlet_identifier: OUT017
   Training samples: 753
@@ -307,10 +306,10 @@ Training model for outlet_identifier: OUT017
   Selecting features for outlet_identifier_OUT017...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1124.53, Selected: 1129.24
-Best trial: 0. Best value: 1231.12: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.87s/it]
-  Best hyperparameters for OUT017: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1422.21
+    Validation RMSE - Important: 1125.97, Selected: 1129.82
+Best trial: 193. Best value: 1227.9: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [04:19<00:00,  1.30s/it]
+  Best hyperparameters for OUT017: {'n_estimators': 271, 'max_depth': 16, 'min_samples_split': 39, 'min_samples_leaf': 53, 'max_features': 0.6, 'bootstrap': False}
+  Weighted RMSE: 1420.74
 
 Training model for outlet_identifier: OUT027
   Training samples: 761
@@ -318,10 +317,10 @@ Training model for outlet_identifier: OUT027
   Selecting features for outlet_identifier_OUT027...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1627.88, Selected: 1636.38
-Best trial: 0. Best value: 1582.6: 100%|███████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.49s/it]
-  Best hyperparameters for OUT027: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1430.80
+    Validation RMSE - Important: 1635.87, Selected: 1633.14
+Best trial: 103. Best value: 1569: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [10:31<00:00,  3.16s/it]
+  Best hyperparameters for OUT027: {'n_estimators': 1498, 'max_depth': 27, 'min_samples_split': 77, 'min_samples_leaf': 74, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1461.07
 
 Training model for outlet_identifier: OUT010
   Training samples: 446
@@ -329,10 +328,10 @@ Training model for outlet_identifier: OUT010
   Selecting features for outlet_identifier_OUT010...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 237.13, Selected: 237.47
-Best trial: 0. Best value: 266.001: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.10s/it]
-  Best hyperparameters for OUT010: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 253.14
+    Validation RMSE - Important: 235.96, Selected: 235.77
+Best trial: 172. Best value: 263.061: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [03:54<00:00,  1.17s/it]
+  Best hyperparameters for OUT010: {'n_estimators': 97, 'max_depth': 8, 'min_samples_split': 90, 'min_samples_leaf': 47, 'max_features': 1.0, 'bootstrap': True}
+  Weighted RMSE: 252.90
 
 Training model for outlet_identifier: OUT018
   Training samples: 752
@@ -340,10 +339,10 @@ Training model for outlet_identifier: OUT018
   Selecting features for outlet_identifier_OUT018...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1109.81, Selected: 1110.48
-Best trial: 0. Best value: 1143.2: 100%|███████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.54s/it]
-  Best hyperparameters for OUT018: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1087.92
+    Validation RMSE - Important: 1113.09, Selected: 1111.50
+Best trial: 127. Best value: 1138.36: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [06:30<00:00,  1.95s/it]
+  Best hyperparameters for OUT018: {'n_estimators': 524, 'max_depth': 25, 'min_samples_split': 84, 'min_samples_leaf': 41, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1087.67
 
 Training model for outlet_identifier: OUT013
   Training samples: 744
@@ -351,10 +350,10 @@ Training model for outlet_identifier: OUT013
   Selecting features for outlet_identifier_OUT013...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1278.50, Selected: 1280.94
-Best trial: 0. Best value: 1213.3: 100%|███████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.64s/it]
-  Best hyperparameters for OUT013: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1115.10
+    Validation RMSE - Important: 1280.31, Selected: 1281.72
+Best trial: 154. Best value: 1210.05: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [09:50<00:00,  2.95s/it]
+  Best hyperparameters for OUT013: {'n_estimators': 924, 'max_depth': 13, 'min_samples_split': 77, 'min_samples_leaf': 45, 'max_features': 0.8, 'bootstrap': False}
+  Weighted RMSE: 1119.42
 
 Training model for outlet_identifier: OUT035
   Training samples: 750
@@ -362,14 +361,14 @@ Training model for outlet_identifier: OUT035
   Selecting features for outlet_identifier_OUT035...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1274.91, Selected: 1272.35
-Best trial: 0. Best value: 1291.62: 100%|██████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.63s/it]
-  Best hyperparameters for OUT035: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 946.96
+    Validation RMSE - Important: 1278.61, Selected: 1274.29
+Best trial: 48. Best value: 1282.41: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [08:03<00:00,  2.42s/it]
+  Best hyperparameters for OUT035: {'n_estimators': 679, 'max_depth': 15, 'min_samples_split': 38, 'min_samples_leaf': 59, 'max_features': 0.9, 'bootstrap': True}
+  Weighted RMSE: 940.60
 
 OUTLET_IDENTIFIER segment summary:
   Models trained: 10
-  Average weighted RMSE: 1001.11
+  Average weighted RMSE: 1004.44
 
 === Training MRP_BINS Segmented Models ===
 Training models for 4 mrp_bins segments
@@ -380,10 +379,10 @@ Training model for mrp_bins: Medium_High
   Selecting features for mrp_bins_Medium_High...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1301.27, Selected: 1307.99
-Best trial: 0. Best value: 1269.06: 100%|██████████████████████████████████████████████████| 1/1 [00:04<00:00,  4.62s/it]
-  Best hyperparameters for Medium_High: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1163.69
+    Validation RMSE - Important: 1301.40, Selected: 1306.11
+Best trial: 96. Best value: 1265.19: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [11:23<00:00,  3.42s/it]
+  Best hyperparameters for Medium_High: {'n_estimators': 673, 'max_depth': 4, 'min_samples_split': 40, 'min_samples_leaf': 36, 'max_features': 0.9, 'bootstrap': True}
+  Weighted RMSE: 1142.49
 
 Training model for mrp_bins: Medium_Low
   Training samples: 1662
@@ -391,10 +390,10 @@ Training model for mrp_bins: Medium_Low
   Selecting features for mrp_bins_Medium_Low...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 803.72, Selected: 806.17
-Best trial: 0. Best value: 881.436: 100%|██████████████████████████████████████████████████| 1/1 [00:05<00:00,  5.74s/it]
-  Best hyperparameters for Medium_Low: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 878.94
+    Validation RMSE - Important: 804.60, Selected: 803.63
+Best trial: 164. Best value: 870.896: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [14:02<00:00,  4.21s/it]
+  Best hyperparameters for Medium_Low: {'n_estimators': 1189, 'max_depth': 4, 'min_samples_split': 16, 'min_samples_leaf': 55, 'max_features': 0.7, 'bootstrap': False}
+  Weighted RMSE: 881.47
 
 Training model for mrp_bins: Low_Price
   Training samples: 1688
@@ -402,10 +401,10 @@ Training model for mrp_bins: Low_Price
   Selecting features for mrp_bins_Low_Price...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 452.82, Selected: 453.97
-Best trial: 0. Best value: 505.116: 100%|██████████████████████████████████████████████████| 1/1 [00:05<00:00,  5.01s/it]
-  Best hyperparameters for Low_Price: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 528.70
+    Validation RMSE - Important: 452.51, Selected: 453.29
+Best trial: 49. Best value: 500.631: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [19:07<00:00,  5.74s/it]
+  Best hyperparameters for Low_Price: {'n_estimators': 1339, 'max_depth': 7, 'min_samples_split': 26, 'min_samples_leaf': 13, 'max_features': 0.4, 'bootstrap': False}
+  Weighted RMSE: 525.04
 
 Training model for mrp_bins: High_Price
   Training samples: 1754
@@ -413,14 +412,14 @@ Training model for mrp_bins: High_Price
   Selecting features for mrp_bins_High_Price...
     After importance filtering: 31 features
     After RFE: 21 features selected
-    Validation RMSE - Important: 1726.59, Selected: 1727.97
-Best trial: 0. Best value: 1652.22: 100%|██████████████████████████████████████████████████| 1/1 [00:03<00:00,  3.88s/it]
-  Best hyperparameters for High_Price: {'n_estimators': 593, 'max_depth': 29, 'min_samples_split': 76, 'min_samples_leaf': 47, 'max_features': 0.6, 'bootstrap': False}
-  Weighted RMSE: 1626.19
+    Validation RMSE - Important: 1730.94, Selected: 1729.72
+Best trial: 193. Best value: 1644.65: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 200/200 [18:15<00:00,  5.48s/it]
+  Best hyperparameters for High_Price: {'n_estimators': 1400, 'max_depth': 4, 'min_samples_split': 63, 'min_samples_leaf': 38, 'max_features': 0.8, 'bootstrap': True}
+  Weighted RMSE: 1615.51
 
 MRP_BINS segment summary:
   Models trained: 4
-  Average weighted RMSE: 1049.38
+  Average weighted RMSE: 1041.13
 
 Validating features before prediction...
 Validating feature consistency...
@@ -432,9 +431,9 @@ Generating outlet_identifier predictions...
 Generating mrp_bins predictions...
 Combining predictions from different segment types...
 Segment type weights:
-  outlet_type: 0.343
-  outlet_identifier: 0.336
-  mrp_bins: 0.321
+  outlet_type: 0.341
+  outlet_identifier: 0.335
+  mrp_bins: 0.324
 
 Best single segment type: outlet_type
 Generating training data predictions...
@@ -447,31 +446,31 @@ Segmented models saved to /Users/whysocurious/Documents/MLDSAIProjects/SalesPred
 === Segmented Model Performance Summary ===
 
 OUTLET_TYPE segments:
-  Average Weighted RMSE: 983.01
+  Average Weighted RMSE: 987.33
   Number of models: 4
 
 OUTLET_IDENTIFIER segments:
-  Average Weighted RMSE: 1001.11
+  Average Weighted RMSE: 1004.44
   Number of models: 10
 
 MRP_BINS segments:
-  Average Weighted RMSE: 1049.38
+  Average Weighted RMSE: 1041.13
   Number of models: 4
 
 Segmented Model Performance Summary:
      Segment_Type  Avg_Weighted_RMSE  Min_Weighted_RMSE  Max_Weighted_RMSE  Num_Models
-      outlet_type         983.005404         241.795027        1430.799234           4
-outlet_identifier        1001.108202         231.930886        1430.799234          10
-         mrp_bins        1049.376784         528.695292        1626.186130           4
+      outlet_type         987.332095         242.228231        1461.065327           4
+outlet_identifier        1004.435753         232.428387        1461.065327          10
+         mrp_bins        1041.125967         525.036064        1615.512085           4
 Saving training predictions...
 Training predictions saved for analysis!
 
 Train Prediction Metrics:
             Model        RMSE        MAE
-      outlet_type 1013.058488 712.166799
-outlet_identifier 1027.158357 721.463876
-         mrp_bins 1021.462054 719.390179
-         combined 1014.831681 713.637046
+      outlet_type 1060.922070 748.007477
+outlet_identifier 1042.952475 733.898720
+         mrp_bins 1060.487777 744.004369
+         combined 1049.424199 738.130152
 Saving feature selection results...
 Feature selection results saved!
 
@@ -479,16 +478,16 @@ Feature Selection Summary:
      Segment_Type           Segment  Selected_Features_Count                                                                                                                                                                                                                                                Selected_Features
       outlet_type Supermarket Type1                       21 Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Item_Identifier_Encoded, Item_Weight_To_MRP_Ratio, Category_Visibility_Share, Substitution_Intensity, Item_Price_Rank_In_Category, Price_Band_Competitors...
       outlet_type     Grocery Store                       21                 Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Item_Identifier_Encoded, Cheaper_Alternatives_Count, Item_Weight_To_MRP_Ratio, Item_Weight, Category_Visibility_Share, Substitution_Intensity, Price_Band_Competitors...
-      outlet_type Supermarket Type3                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Band_Competitors, Price_Gap_To_Nearest_Competitor, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
+      outlet_type Supermarket Type3                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Gap_To_Nearest_Competitor, Price_Band_Competitors, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
       outlet_type Supermarket Type2                       21            Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Category_Visibility_Share, Item_Identifier_Encoded, Cheaper_Alternatives_Count, Price_Band_Competitors, Item_Weight, Item_Weight_To_MRP_Ratio, Item_Price_Rank_In_Category...
 outlet_identifier            OUT049                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight_To_MRP_Ratio, Price_Gap_To_Nearest_Competitor, Item_Weight, Item_Price_Rank_In_Category, Cheaper_Alternatives_Count, Category_Visibility_Share, Substitution_Intensity...
 outlet_identifier            OUT045                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Gap_To_Nearest_Competitor, Item_Price_Rank_In_Category, Item_Weight_To_MRP_Ratio, Price_Band_Competitors, Category_Visibility_Share...
-outlet_identifier            OUT046                       21                 Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight_To_MRP_Ratio, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Item_Weight, Substitution_Intensity, Price_Band_Competitors, Category_Visibility_Share...
+outlet_identifier            OUT046                       21                 Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Price_Gap_To_Nearest_Competitor, Item_Weight_To_MRP_Ratio, Item_Weight, Cheaper_Alternatives_Count, Substitution_Intensity, Price_Band_Competitors, Category_Visibility_Share...
 outlet_identifier            OUT019                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Item_Weight_To_MRP_Ratio, Item_Weight, Category_Visibility_Share, Substitution_Intensity, Item_Price_Rank_In_Category...
-outlet_identifier            OUT017                       21            Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Category_Visibility_Share, Item_Weight_To_MRP_Ratio, Item_Identifier_Encoded, Item_Weight, Item_Price_Rank_In_Category, Price_Band_Competitors...
-outlet_identifier            OUT027                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Band_Competitors, Price_Gap_To_Nearest_Competitor, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
+outlet_identifier            OUT017                       21            Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Category_Visibility_Share, Item_Weight_To_MRP_Ratio, Item_Identifier_Encoded, Item_Weight, Price_Band_Competitors, Item_Price_Rank_In_Category...
+outlet_identifier            OUT027                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Gap_To_Nearest_Competitor, Price_Band_Competitors, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
 ... and 8 more segments
-Segmented model training completed in 427.5 seconds
+Segmented model training completed in 11782.1 seconds
 
 Creating multiple submission files...
 ✓ submission_outlet_type_segments.csv
@@ -499,14 +498,14 @@ Creating multiple submission files...
 
 Submission Comparison Summary:
   Submission_Type  Mean_Prediction  Std_Prediction  Min_Prediction  Max_Prediction  Median_Prediction  Zero_Predictions                                           File_Path
-      outlet_type          2240.99         1356.64           94.47         6483.12            2141.67                 0 submission_outlet_type_segments_20250727_140008.csv
-outlet_identifier          2233.68         1352.79          123.20         6483.12            2158.01                 0   submission_outlet_id_segments_20250727_140008.csv
-         mrp_bins          2195.31         1311.91           91.77         6490.10            2114.21                 0     submission_mrp_bin_segments_20250727_140008.csv
-         combined          2223.87         1334.84          103.71         6484.05            2148.33                 0     submission_weighted_average_20250727_140008.csv
-      best_single          2240.99         1356.64           94.47         6483.12            2141.67                 0    submission_best_single_model_20250727_140008.csv
+      outlet_type          2262.80         1368.00          136.25         6463.92            2146.62                 0 submission_outlet_type_segments_20250727_141718.csv
+outlet_identifier          2244.16         1370.94          141.11         6463.92            2143.71                 0   submission_outlet_id_segments_20250727_141718.csv
+         mrp_bins          2229.56         1342.98           70.74         6559.81            2147.51                 0     submission_mrp_bin_segments_20250727_141718.csv
+         combined          2245.79         1356.75          117.11         6493.99            2143.18                 0     submission_weighted_average_20250727_141718.csv
+      best_single          2262.80         1368.00          136.25         6463.92            2146.62                 0    submission_best_single_model_20250727_141718.csv
 
 Most confident model (lowest std): mrp_bins
-Least confident model (highest std): outlet_type
+Least confident model (highest std): outlet_identifier
 
 All submissions saved to: /Users/whysocurious/Documents/MLDSAIProjects/SalesPred_Hackathon/data/submissions
 
@@ -518,9 +517,9 @@ Loss Function: Weighted RMSE
 Target Transform: Box-Cox
 Segments: Outlet Type, Outlet ID, MRP Bins
 Feature Selection: RF Importance + RFE
-Start time: 2025-07-27 13:52:57.048578
-End time: 2025-07-27 14:00:08.365189
-Total time: 431.3 seconds
+Start time: 2025-07-27 11:00:53.234675
+End time: 2025-07-27 14:17:18.583693
+Total time: 11785.3 seconds
 Steps completed: ingest, features, encoding, modeling
 
 Output files generated:
@@ -542,22 +541,22 @@ Submission files created:
 
 Final Model Performance:
      Segment_Type  Avg_Weighted_RMSE  Min_Weighted_RMSE  Max_Weighted_RMSE  Num_Models
-      outlet_type         983.005404         241.795027        1430.799234           4
-outlet_identifier        1001.108202         231.930886        1430.799234          10
-         mrp_bins        1049.376784         528.695292        1626.186130           4
+      outlet_type         987.332095         242.228231        1461.065327           4
+outlet_identifier        1004.435753         232.428387        1461.065327          10
+         mrp_bins        1041.125967         525.036064        1615.512085           4
 
 Train Prediction Performance:
             Model        RMSE        MAE
-      outlet_type 1013.058488 712.166799
-outlet_identifier 1027.158357 721.463876
-         mrp_bins 1021.462054 719.390179
-         combined 1014.831681 713.637046
+      outlet_type 1060.922070 748.007477
+outlet_identifier 1042.952475 733.898720
+         mrp_bins 1060.487777 744.004369
+         combined 1049.424199 738.130152
 
 Feature Selection Summary (Top 5 segments):
      Segment_Type           Segment  Selected_Features_Count                                                                                                                                                                                                                                                Selected_Features
       outlet_type Supermarket Type1                       21 Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Cheaper_Alternatives_Count, Item_Identifier_Encoded, Item_Weight_To_MRP_Ratio, Category_Visibility_Share, Substitution_Intensity, Item_Price_Rank_In_Category, Price_Band_Competitors...
       outlet_type     Grocery Store                       21                 Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Item_Identifier_Encoded, Cheaper_Alternatives_Count, Item_Weight_To_MRP_Ratio, Item_Weight, Category_Visibility_Share, Substitution_Intensity, Price_Band_Competitors...
-      outlet_type Supermarket Type3                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Band_Competitors, Price_Gap_To_Nearest_Competitor, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
+      outlet_type Supermarket Type3                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight, Cheaper_Alternatives_Count, Price_Gap_To_Nearest_Competitor, Price_Band_Competitors, Item_Price_Rank_In_Category, Category_Visibility_Share, Item_Weight_To_MRP_Ratio...
       outlet_type Supermarket Type2                       21            Item_MRP, Price_Ratio_To_Category_Avg, Price_Gap_To_Nearest_Competitor, Category_Visibility_Share, Item_Identifier_Encoded, Cheaper_Alternatives_Count, Price_Band_Competitors, Item_Weight, Item_Weight_To_MRP_Ratio, Item_Price_Rank_In_Category...
 outlet_identifier            OUT049                       21            Item_MRP, Price_Ratio_To_Category_Avg, Item_Identifier_Encoded, Item_Weight_To_MRP_Ratio, Price_Gap_To_Nearest_Competitor, Item_Weight, Item_Price_Rank_In_Category, Cheaper_Alternatives_Count, Category_Visibility_Share, Substitution_Intensity...
 

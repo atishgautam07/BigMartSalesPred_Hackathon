@@ -67,14 +67,6 @@ class FeatureEngineer:
         # Create copy to avoid modifying original
         df_features = df.copy()
         
-        # MODIFIED: Ensure categorical columns are string type for consistent label encoding
-        categorical_cols = ['Item_Type', 'Item_Identifier', 'Outlet_Identifier', 
-                        'Outlet_Size', 'Outlet_Location_Type', 'Outlet_Type', 'Item_Fat_Content']
-        
-        for col in categorical_cols:
-            if col in df_features.columns:
-                df_features[col] = df_features[col].astype(str)
-        
         # Apply transformations in sequence
         df_features = self._create_basic_features(df_features)
         df_features = self._add_statistical_features(df_features)
@@ -104,8 +96,7 @@ class FeatureEngineer:
         # Create bins using quantiles for balanced distribution across strata
         quantiles = [0, 0.25, 0.5, 0.75, 1.0]
         bin_edges = mrp_values.quantile(quantiles).tolist()
-        # bin_edges = [30.0, 50.0, 120.0, 175.0, 270.0]
-        
+        bin_edges = [30.0, 50.0, 120.0, 175.0, 270.0]
         # Ensure unique edges (in case of duplicates)
         bin_edges = sorted(list(set(bin_edges)))
         
@@ -154,7 +145,7 @@ class FeatureEngineer:
         df['Outlet_Age'] = 2013 - df['Outlet_Establishment_Year']
         df['Outlet_Age_Squared'] = df['Outlet_Age'] ** 2
         
-        # MODIFIED: Use fitted MRP bins and ensure string type for label encoding
+        # MODIFIED: Use fitted MRP bins instead of hardcoded bins
         df['Item_MRP_Bins'] = pd.cut(
             df['Item_MRP'], 
             bins=self.mrp_bins_info['edges'], 
@@ -162,9 +153,8 @@ class FeatureEngineer:
             include_lowest=True
         )
         
-        # Handle any NaN values and ensure string type for label encoding
+        # Handle any NaN values (items outside training range)
         df['Item_MRP_Bins'] = df['Item_MRP_Bins'].fillna(self.mrp_bins_info['labels'][0])
-        df['Item_MRP_Bins'] = df['Item_MRP_Bins'].astype(str)
         
         # Visibility efficiency metric
         df['Price_Per_Unit_Visibility'] = df['Item_MRP'] / (df['Item_Visibility'] + 0.001)
@@ -330,9 +320,7 @@ class FeatureEngineer:
             for item in items:
                 item_to_group[item] = group
         
-        # MODIFIED: Ensure string type for label encoding
         df['Complement_Group'] = df['Item_Type'].map(item_to_group).fillna('Other')
-        df['Complement_Group'] = df['Complement_Group'].astype(str)
         
         # Complement group statistics
         df['Complement_Group_Items_Count'] = df.groupby(
@@ -481,7 +469,8 @@ class FeatureEngineer:
     
     def get_segment_info(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Extract segment information for model training.
+        NEW: Extract segment information for model training.
+        Add this method to the FeatureEngineer class.
         
         Args:
             df: Processed dataset
@@ -503,11 +492,10 @@ class FeatureEngineer:
             )
             df['Item_MRP_Bins'] = df['Item_MRP_Bins'].fillna(self.mrp_bins_info['labels'][0])
         
-        # MODIFIED: Ensure all segment columns are string type for consistency
         segment_info = pd.DataFrame({
-            'Outlet_Type': df['Outlet_Type'].astype(str),
-            'Outlet_Identifier': df['Outlet_Identifier'].astype(str),
-            'Item_MRP_Bins': df['Item_MRP_Bins'].astype(str)
+            'Outlet_Type': df['Outlet_Type'],
+            'Outlet_Identifier': df['Outlet_Identifier'],
+            'Item_MRP_Bins': df['Item_MRP_Bins']
         })
         
         return segment_info

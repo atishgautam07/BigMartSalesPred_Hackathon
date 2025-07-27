@@ -36,32 +36,19 @@ class FeatureEncoder:
         # Identify feature types automatically
         self._identify_feature_types(train_df, target_col)
         
-        # MODIFIED: Only fit label encoding (no target, frequency, or one-hot encoding)
-        self._fit_label_encoding_all(train_df)
+        # Fit different encoding strategies
+        self._fit_target_encoding(train_df, target_col)
+        self._fit_frequency_encoding(train_df)
+        self._fit_label_encoding(train_df)
+        self._fit_onehot_encoding(train_df)
         
         self._is_fitted = True
         print("Feature encoder fitted successfully!")
         return self
     
-    def _fit_label_encoding_all(self, train_df: pd.DataFrame):
-        """Fit label encoders for all categorical features."""
-        print("Fitting label encoding for all categorical features...")
-        
-        for col in self.feature_lists['label_encode_cat']:
-            if col in train_df.columns:
-                le = LabelEncoder()
-                # Fit on unique values, ensuring no data leakage
-                unique_vals = train_df[col].astype(str).unique()
-                le.fit(unique_vals)
-                self.encoders[f'{col}_label'] = le
-                
-                print(f"  {col}: {len(unique_vals)} unique values")
-            else:
-                print(f"  Warning: {col} not found in training data")
-
     def transform(self, df: pd.DataFrame, 
-             is_train: bool = True,
-             target_col: Optional[str] = None) -> pd.DataFrame:
+                 is_train: bool = True,
+                 target_col: Optional[str] = None) -> pd.DataFrame:
         """
         Apply learned encodings to dataframe.
         
@@ -80,14 +67,23 @@ class FeatureEncoder:
         
         df_encoded = df.copy()
         
-        # MODIFIED: Only apply label encoding
-        df_encoded = self._apply_label_encoding_all(df_encoded)
+        # Apply encodings in sequence
+        if is_train and target_col:
+            df_encoded = self._apply_target_encoding_train(df_encoded, target_col)
+        else:
+            df_encoded = self._apply_target_encoding_test(df_encoded)
+            
+        df_encoded = self._apply_frequency_encoding(df_encoded)
+        df_encoded = self._apply_label_encoding(df_encoded)
         
         # Get final feature matrix
-        feature_matrix = self._prepare_feature_matrix_label_only(df_encoded)
+        feature_matrix = self._prepare_feature_matrix(df_encoded)
+        
+        # Apply one-hot encoding
+        feature_matrix = self._apply_onehot_encoding(feature_matrix)
         
         # Apply scaling
-        feature_matrix = self._apply_scaling_label_only(feature_matrix)
+        feature_matrix = self._apply_scaling(feature_matrix)
         
         return feature_matrix
     
@@ -98,19 +94,18 @@ class FeatureEncoder:
     
     def _identify_feature_types(self, df: pd.DataFrame, target_col: str):
         """Automatically identify different feature types."""
-        # MODIFIED: Move all categorical features to label encoding
-        self.feature_lists['low_cardinality_cat'] = []  # Empty - no one-hot encoding
-        
-        # MODIFIED: All categorical features use label encoding now
-        self.feature_lists['label_encode_cat'] = [
-            'Outlet_Size', 'Outlet_Location_Type', 'Outlet_Type', 'Item_Fat_Content',
-            'Item_Type', 'Item_Identifier', 'Outlet_Identifier',
-            'Item_MRP_Bins', 'Complement_Group'
+        # Define feature categories
+        self.feature_lists['low_cardinality_cat'] = [
+            'Outlet_Size', 'Outlet_Location_Type', 'Outlet_Type', 'Item_Fat_Content'
         ]
         
-        # Remove high cardinality and ordinal categories (now all in label_encode_cat)
-        self.feature_lists['high_cardinality_cat'] = []
-        self.feature_lists['ordinal_cat'] = []
+        self.feature_lists['high_cardinality_cat'] = [
+            'Item_Type', 'Item_Identifier', 'Outlet_Identifier'
+        ]
+        
+        self.feature_lists['ordinal_cat'] = [
+            'Item_MRP_Bins', 'Complement_Group'
+        ]
         
         self.feature_lists['binary'] = [
             'Low_Fat_Flag', 'Is_Tier1_Supermarket', 'Large_Outlet_Premium_Item',
@@ -131,51 +126,178 @@ class FeatureEncoder:
         
         print(f"Identified {len(self.feature_lists['numerical'])} numerical features")
         print(f"Identified {len(self.feature_lists['binary'])} binary features")
-        print(f"Identified {len(self.feature_lists['label_encode_cat'])} categorical features for label encoding")
-
-    def _apply_label_encoding_all(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply label encoding to all categorical features."""
+        
+    def _fit_target_encoding(self, train_df: pd.DataFrame, target_col: str):
+        """Fit target encoding for high cardinality features using CV."""
+        print("Fitting target encoding for Item_Type...")
+        
+        # Store CV fold means for Item_Type
+        cv_folds = 5
+        skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+        
+        # Calculate overall mean
+        self.encoding_maps['overall_mean'] = train_df[target_col].mean()
+        
+        # Store fold-wise encodings for training
+        self.encoding_maps['item_type_cv'] = {}
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(
+            skf.split(train_df, train_df['Outlet_Type'])
+        ):
+            fold_means = train_df.iloc[train_idx].groupby('Item_Type')[target_col].mean()
+            self.encoding_maps['item_type_cv'][fold_idx] = fold_means
+            
+        # Store full training set means for test encoding
+        self.encoding_maps['item_type_full'] = train_df.groupby('Item_Type')[target_col].mean()
+        
+    def _apply_target_encoding_train(self, train_df: pd.DataFrame, target_col: str) -> pd.DataFrame:
+        """Apply target encoding to training data using CV."""
+        df = train_df.copy()
+        
+        # Initialize encoded column
+        encoded_values = np.zeros(len(df))
+        
+        # Apply CV encoding
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(
+            skf.split(df, df['Outlet_Type'])
+        ):
+            # Use pre-computed fold means
+            fold_means = self.encoding_maps['item_type_cv'][fold_idx]
+            
+            # Apply to validation fold
+            encoded_values[val_idx] = df.iloc[val_idx]['Item_Type'].map(
+                fold_means
+            ).fillna(self.encoding_maps['overall_mean'])
+            
+        df['Item_Type_Encoded'] = encoded_values
+        return df
+    
+    def _apply_target_encoding_test(self, test_df: pd.DataFrame) -> pd.DataFrame:
+        """Apply target encoding to test data."""
+        df = test_df.copy()
+        
+        # Use full training set means
+        df['Item_Type_Encoded'] = df['Item_Type'].map(
+            self.encoding_maps['item_type_full']
+        ).fillna(self.encoding_maps['overall_mean'])
+        
+        return df
+    
+    def _fit_frequency_encoding(self, train_df: pd.DataFrame):
+        """Fit frequency encoding for identifier columns."""
+        print("Fitting frequency encoding...")
+        
+        for col in ['Item_Identifier', 'Outlet_Identifier']:
+            self.encoding_maps[f'{col}_freq'] = train_df[col].value_counts().to_dict()
+            
+    def _apply_frequency_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply frequency encoding."""
         df_encoded = df.copy()
         
-        for col in self.feature_lists['label_encode_cat']:
-            if col in df.columns:
-                le = self.encoders[f'{col}_label']
-                # Handle unseen categories gracefully
-                col_str = df_encoded[col].astype(str)
-                
-                # Map unseen values to a default (first class)
-                known_classes = set(le.classes_)
-                col_str_mapped = col_str.apply(
-                    lambda x: x if x in known_classes else le.classes_[0]
-                )
-                
-                df_encoded[f'{col}_Encoded'] = le.transform(col_str_mapped)
+        for col in ['Item_Identifier', 'Outlet_Identifier']:
+            freq_map = self.encoding_maps[f'{col}_freq']
+            df_encoded[f'{col}_Freq'] = df_encoded[col].map(freq_map).fillna(1)
             
         return df_encoded
-
-    def _prepare_feature_matrix_label_only(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare the feature matrix with label-encoded categorical features."""
-        # Start with numerical features
+    
+    def _fit_label_encoding(self, train_df: pd.DataFrame):
+        """Fit label encoders for ordinal features."""
+        print("Fitting label encoding...")
+        
+        for col in self.feature_lists['ordinal_cat']:
+            le = LabelEncoder()
+            # Fit on unique values to handle unseen categories
+            unique_vals = train_df[col].astype(str).unique()
+            le.fit(unique_vals)
+            self.encoders[f'{col}_label'] = le
+            
+    def _apply_label_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply label encoding."""
+        df_encoded = df.copy()
+        
+        for col in self.feature_lists['ordinal_cat']:
+            le = self.encoders[f'{col}_label']
+            # Handle unseen categories gracefully
+            col_str = df_encoded[col].astype(str)
+            
+            # Map unseen values to a default
+            known_classes = set(le.classes_)
+            col_str_mapped = col_str.apply(
+                lambda x: x if x in known_classes else le.classes_[0]
+            )
+            
+            df_encoded[f'{col}_Encoded'] = le.transform(col_str_mapped)
+            
+        return df_encoded
+    
+    def _fit_onehot_encoding(self, train_df: pd.DataFrame):
+        """Fit one-hot encoder for categorical features."""
+        print("Fitting one-hot encoding...")
+        
+        self.encoders['onehot'] = OneHotEncoder(
+            sparse_output=False, 
+            drop='first', 
+            handle_unknown='ignore'
+        )
+        
+        # Fit on low cardinality categorical features
+        cat_features = train_df[self.feature_lists['low_cardinality_cat']]
+        self.encoders['onehot'].fit(cat_features)
+        
+        # Store feature names
+        self.encoding_maps['onehot_features'] = self.encoders['onehot'].get_feature_names_out(
+            self.feature_lists['low_cardinality_cat']
+        )
+        
+    def _prepare_feature_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Prepare the feature matrix with selected columns."""
+        # Update numerical features with encoded ones
         numerical_cols = self.feature_lists['numerical'].copy()
+        numerical_cols.extend([
+            'Item_Type_Encoded', 
+            'Item_Identifier_Freq', 
+            'Outlet_Identifier_Freq',
+            'Item_MRP_Bins_Encoded', 
+            'Complement_Group_Encoded'
+        ])
         
-        # Add label-encoded categorical features
-        for col in self.feature_lists['label_encode_cat']:
-            encoded_col = f'{col}_Encoded'
-            if encoded_col in df.columns:
-                numerical_cols.append(encoded_col)
-        
-        # Add binary features
-        feature_cols = numerical_cols + self.feature_lists['binary']
+        # Combine all features
+        feature_cols = (
+            numerical_cols + 
+            self.feature_lists['binary'] + 
+            self.feature_lists['low_cardinality_cat']
+        )
         
         # Filter to existing columns
         existing_cols = [col for col in feature_cols if col in df.columns]
         
         return df[existing_cols].copy()
     
-    def _apply_scaling_label_only(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply standard scaling to numerical and encoded features."""
-        # All columns are numerical or binary now
-        numerical_cols = [col for col in df.columns if col not in self.feature_lists['binary']]
+    def _apply_onehot_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply one-hot encoding and combine with other features."""
+        # Separate categorical features
+        cat_cols = self.feature_lists['low_cardinality_cat']
+        cat_data = df[cat_cols]
+        other_data = df.drop(columns=cat_cols)
+        
+        # Apply one-hot encoding
+        cat_encoded = self.encoders['onehot'].transform(cat_data)
+        cat_encoded_df = pd.DataFrame(
+            cat_encoded, 
+            columns=self.encoding_maps['onehot_features'],
+            index=df.index
+        )
+        
+        # Combine
+        return pd.concat([other_data, cat_encoded_df], axis=1)
+    
+    def _apply_scaling(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply standard scaling to numerical features."""
+        # Identify numerical columns (exclude one-hot encoded)
+        onehot_cols = self.encoding_maps['onehot_features']
+        numerical_cols = [col for col in df.columns if col not in onehot_cols]
         
         # Initialize scaler if not exists
         if 'standard' not in self.scalers:
@@ -188,205 +310,28 @@ class FeatureEncoder:
         df_scaled[numerical_cols] = self.scalers['standard'].transform(df[numerical_cols])
         
         return df_scaled
-
-    # def _fit_target_encoding(self, train_df: pd.DataFrame, target_col: str):
-    #     """Fit target encoding for high cardinality features using CV."""
-    #     print("Fitting target encoding for Item_Type...")
-        
-    #     # Store CV fold means for Item_Type
-    #     cv_folds = 5
-    #     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-        
-    #     # Calculate overall mean
-    #     self.encoding_maps['overall_mean'] = train_df[target_col].mean()
-        
-    #     # Store fold-wise encodings for training
-    #     self.encoding_maps['item_type_cv'] = {}
-        
-    #     for fold_idx, (train_idx, val_idx) in enumerate(
-    #         skf.split(train_df, train_df['Outlet_Type'])
-    #     ):
-    #         fold_means = train_df.iloc[train_idx].groupby('Item_Type')[target_col].mean()
-    #         self.encoding_maps['item_type_cv'][fold_idx] = fold_means
-            
-    #     # Store full training set means for test encoding
-    #     self.encoding_maps['item_type_full'] = train_df.groupby('Item_Type')[target_col].mean()
-        
-    # def _apply_target_encoding_train(self, train_df: pd.DataFrame, target_col: str) -> pd.DataFrame:
-    #     """Apply target encoding to training data using CV."""
-    #     df = train_df.copy()
-        
-    #     # Initialize encoded column
-    #     encoded_values = np.zeros(len(df))
-        
-    #     # Apply CV encoding
-    #     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        
-    #     for fold_idx, (train_idx, val_idx) in enumerate(
-    #         skf.split(df, df['Outlet_Type'])
-    #     ):
-    #         # Use pre-computed fold means
-    #         fold_means = self.encoding_maps['item_type_cv'][fold_idx]
-            
-    #         # Apply to validation fold
-    #         encoded_values[val_idx] = df.iloc[val_idx]['Item_Type'].map(
-    #             fold_means
-    #         ).fillna(self.encoding_maps['overall_mean'])
-            
-    #     df['Item_Type_Encoded'] = encoded_values
-    #     return df
-    
-    # def _apply_target_encoding_test(self, test_df: pd.DataFrame) -> pd.DataFrame:
-    #     """Apply target encoding to test data."""
-    #     df = test_df.copy()
-        
-    #     # Use full training set means
-    #     df['Item_Type_Encoded'] = df['Item_Type'].map(
-    #         self.encoding_maps['item_type_full']
-    #     ).fillna(self.encoding_maps['overall_mean'])
-        
-    #     return df
-    
-    # def _fit_frequency_encoding(self, train_df: pd.DataFrame):
-    #     """Fit frequency encoding for identifier columns."""
-    #     print("Fitting frequency encoding...")
-        
-    #     for col in ['Item_Identifier', 'Outlet_Identifier']:
-    #         self.encoding_maps[f'{col}_freq'] = train_df[col].value_counts().to_dict()
-            
-    # def _apply_frequency_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Apply frequency encoding."""
-    #     df_encoded = df.copy()
-        
-    #     for col in ['Item_Identifier', 'Outlet_Identifier']:
-    #         freq_map = self.encoding_maps[f'{col}_freq']
-    #         df_encoded[f'{col}_Freq'] = df_encoded[col].map(freq_map).fillna(1)
-            
-    #     return df_encoded
-    
-    # def _fit_label_encoding(self, train_df: pd.DataFrame):
-    #     """Fit label encoders for ordinal features."""
-    #     print("Fitting label encoding...")
-        
-    #     for col in self.feature_lists['ordinal_cat']:
-    #         le = LabelEncoder()
-    #         # Fit on unique values to handle unseen categories
-    #         unique_vals = train_df[col].astype(str).unique()
-    #         le.fit(unique_vals)
-    #         self.encoders[f'{col}_label'] = le
-            
-    # def _apply_label_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Apply label encoding."""
-    #     df_encoded = df.copy()
-        
-    #     for col in self.feature_lists['ordinal_cat']:
-    #         le = self.encoders[f'{col}_label']
-    #         # Handle unseen categories gracefully
-    #         col_str = df_encoded[col].astype(str)
-            
-    #         # Map unseen values to a default
-    #         known_classes = set(le.classes_)
-    #         col_str_mapped = col_str.apply(
-    #             lambda x: x if x in known_classes else le.classes_[0]
-    #         )
-            
-    #         df_encoded[f'{col}_Encoded'] = le.transform(col_str_mapped)
-            
-    #     return df_encoded
-    
-    # def _fit_onehot_encoding(self, train_df: pd.DataFrame):
-    #     """Fit one-hot encoder for categorical features."""
-    #     print("Fitting one-hot encoding...")
-        
-    #     self.encoders['onehot'] = OneHotEncoder(
-    #         sparse_output=False, 
-    #         drop='first', 
-    #         handle_unknown='ignore'
-    #     )
-        
-    #     # Fit on low cardinality categorical features
-    #     cat_features = train_df[self.feature_lists['low_cardinality_cat']]
-    #     self.encoders['onehot'].fit(cat_features)
-        
-    #     # Store feature names
-    #     self.encoding_maps['onehot_features'] = self.encoders['onehot'].get_feature_names_out(
-    #         self.feature_lists['low_cardinality_cat']
-    #     )
-        
-    # def _prepare_feature_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Prepare the feature matrix with selected columns."""
-    #     # Update numerical features with encoded ones
-    #     numerical_cols = self.feature_lists['numerical'].copy()
-    #     numerical_cols.extend([
-    #         'Item_Type_Encoded', 
-    #         'Item_Identifier_Freq', 
-    #         'Outlet_Identifier_Freq',
-    #         'Item_MRP_Bins_Encoded', 
-    #         'Complement_Group_Encoded'
-    #     ])
-        
-    #     # Combine all features
-    #     feature_cols = (
-    #         numerical_cols + 
-    #         self.feature_lists['binary'] + 
-    #         self.feature_lists['low_cardinality_cat']
-    #     )
-        
-    #     # Filter to existing columns
-    #     existing_cols = [col for col in feature_cols if col in df.columns]
-        
-    #     return df[existing_cols].copy()
-    
-    # def _apply_onehot_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Apply one-hot encoding and combine with other features."""
-    #     # Separate categorical features
-    #     cat_cols = self.feature_lists['low_cardinality_cat']
-    #     cat_data = df[cat_cols]
-    #     other_data = df.drop(columns=cat_cols)
-        
-    #     # Apply one-hot encoding
-    #     cat_encoded = self.encoders['onehot'].transform(cat_data)
-    #     cat_encoded_df = pd.DataFrame(
-    #         cat_encoded, 
-    #         columns=self.encoding_maps['onehot_features'],
-    #         index=df.index
-    #     )
-        
-    #     # Combine
-    #     return pd.concat([other_data, cat_encoded_df], axis=1)
-    
-    # def _apply_scaling(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Apply standard scaling to numerical features."""
-    #     # Identify numerical columns (exclude one-hot encoded)
-    #     onehot_cols = self.encoding_maps['onehot_features']
-    #     numerical_cols = [col for col in df.columns if col not in onehot_cols]
-        
-    #     # Initialize scaler if not exists
-    #     if 'standard' not in self.scalers:
-    #         print("Fitting standard scaler...")
-    #         self.scalers['standard'] = StandardScaler()
-    #         self.scalers['standard'].fit(df[numerical_cols])
-        
-    #     # Apply scaling
-    #     df_scaled = df.copy()
-    #     df_scaled[numerical_cols] = self.scalers['standard'].transform(df[numerical_cols])
-        
-    #     return df_scaled
     
     def get_feature_names(self) -> List[str]:
         """Get list of all features after encoding."""
         if not self._is_fitted:
             raise ValueError("FeatureEncoder must be fitted first")
             
-        # Start with numerical features
-        all_features = self.feature_lists['numerical'].copy()
+        # Numerical + encoded features
+        numerical_and_encoded = self.feature_lists['numerical'].copy()
+        numerical_and_encoded.extend([
+            'Item_Type_Encoded',
+            'Item_Identifier_Freq',
+            'Outlet_Identifier_Freq',
+            'Item_MRP_Bins_Encoded',
+            'Complement_Group_Encoded'
+        ])
         
-        # Add label-encoded categorical features
-        for col in self.feature_lists['label_encode_cat']:
-            all_features.append(f'{col}_Encoded')
-        
-        # Add binary features
-        all_features.extend(self.feature_lists['binary'])
+        # Add binary and one-hot encoded features
+        all_features = (
+            numerical_and_encoded + 
+            self.feature_lists['binary'] +
+            list(self.encoding_maps['onehot_features'])
+        )
         
         return all_features
 
